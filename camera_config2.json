@@ -1,0 +1,24 @@
+{
+    "ROI": [
+        [
+            456,
+            758
+        ],
+        [
+            1260,
+            688
+        ],
+        [
+            1197,
+            1291
+        ],
+        [
+            306,
+            1291
+        ]
+    ],
+    "HANDRAIL_LEFT_POLY": [],
+    "HANDRAIL_RIGHT_POLY": [],
+    "STEP_BOTTOM": [],
+    "STEP_TOP": []
+}

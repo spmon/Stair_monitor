@@ -1,0 +1,15 @@
+path: D:/vnaDemo/Dataset/data3
+train: train/images
+val: valid/images
+test: test/images
+
+
+nc: 2
+names: ['Helmet', 'Vest']
+
+roboflow:
+  workspace: ujicobadataset01
+  project: intelligent-ppe
+  version: 8
+  license: Public Domain
+  url: https://universe.roboflow.com/ujicobadataset01/intelligent-ppe/dataset/8

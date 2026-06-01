@@ -1,0 +1,14 @@
+path: D:/vnaDemo/Dataset/data1
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 3
+names: ['Hard_hat', 'Person', 'Vest']
+
+roboflow:
+  workspace: ptit-hmsdd
+  project: ppe-detection-ozhfb-bcouu
+  version: 2
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/ptit-hmsdd/ppe-detection-ozhfb-bcouu/dataset/2

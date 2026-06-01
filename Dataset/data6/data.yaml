@@ -1,0 +1,14 @@
+path: D:/vnaDemo/Dataset/data6
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 2
+names: ['reflective_jacket', 'safety_helmet']
+
+roboflow:
+  workspace: uhhh
+  project: vest-helmet-wlbch
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/uhhh/vest-helmet-wlbch/dataset/1

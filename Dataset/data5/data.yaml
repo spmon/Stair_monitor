@@ -1,0 +1,14 @@
+path: D:/vnaDemo/Dataset/data5
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 3
+names: ['helmet', 'person', 'vest']
+
+roboflow:
+  workspace: object-detection-f98r0
+  project: vest-helmet-detection
+  version: 2
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/object-detection-f98r0/vest-helmet-detection/dataset/2
