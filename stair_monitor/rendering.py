@@ -232,6 +232,13 @@ def build_debug_lines(analysis):
         f"BACKWARD_RAW:{analysis.get('backward_raw', False)}",
         f"BACKWARD_HITS:{analysis.get('backward_hits', 0)}",
         f"BACKWARD_CONF:{analysis.get('backward_confirmed', False)}",
+        f"STAND_RAW:{analysis.get('standing_raw', False)}",
+        f"STAND_HITS:{analysis.get('standing_hits', 0)}",
+        f"STAND_CONF:{analysis.get('standing_still_confirmed', False)}",
+        f"STAND_RANGE:{analysis['standing_motion_range']:.1f}"
+        if analysis.get("standing_motion_range") is not None
+        else "STAND_RANGE:NA",
+        f"STAND_LEN:{analysis.get('standing_len', 0)}",
         f"ARM_ORDER:{analysis.get('arm_side_order', 'UNKNOWN')}",
         f"HOLD_CORRECT_RAW:{analysis.get('holding_correct_raw', False)}",
         f"HOLD_WRONG_RAW:{analysis.get('holding_wrong_raw', False)}",

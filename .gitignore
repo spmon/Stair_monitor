@@ -18,3 +18,4 @@ yolo11n-pose.pt
 yolo11m-pose.pt
 main.py
 val2/
+video/
