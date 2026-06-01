@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VNA Camera Viewer - Pro</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap');
+
+  :root {
+    --bg: #0a0c0f;
+    --panel: #0f1318;
+    --border: #1e2530;
+    --accent: #00e5ff;
+    --accent2: #ff3d57;
+    --accent3: #39ff14;
+    --text: #c8d6e5;
+    --dim: #4a5568;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Rajdhani', sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* HEADER */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    flex-shrink: 0;
+  }
+
+  .logo {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 14px;
+    color: var(--accent);
+    letter-spacing: 3px;
+    text-transform: uppercase;
+  }
+
+  .logo span { color: var(--dim); }
+
+  #status-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: 2px;
+    border: 1px solid var(--border);
+    transition: all 0.3s;
+  }
+
+  .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--dim);
+    transition: all 0.3s;
+  }
+
+  .dot.live { background: var(--accent3); box-shadow: 0 0 8px var(--accent3); animation: pulse 1.5s infinite; }
+  .dot.error { background: var(--accent2); box-shadow: 0 0 8px var(--accent2); }
+
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  .time-display {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 13px;
+    color: var(--dim);
+  }
+
+  /* MAIN LAYOUT */
+  .main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    gap: 1px;
+    background: var(--border);
+  }
+
+  /* VIDEO AREA */
+  .video-container {
+    flex: 1;
+    position: relative;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+
+  #frame {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+
+  /* CORNER DECORATIONS */
+  .corner {
+    position: absolute;
+    width: 20px; height: 20px;
+    border-color: var(--accent);
+    border-style: solid;
+    opacity: 0.6;
+  }
+  .corner.tl { top: 12px; left: 12px; border-width: 2px 0 0 2px; }
+  .corner.tr { top: 12px; right: 12px; border-width: 2px 2px 0 0; }
+  .corner.bl { bottom: 12px; left: 12px; border-width: 0 0 2px 2px; }
+  .corner.br { bottom: 12px; right: 12px; border-width: 0 2px 2px 0; }
+
+  /* REC INDICATOR */
+  #rec-overlay {
+    position: absolute;
+    top: 16px; left: 16px;
+    display: none;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,61,87,0.15);
+    border: 1px solid var(--accent2);
+    padding: 4px 10px;
+    border-radius: 2px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    color: var(--accent2);
+  }
+  #rec-overlay.active { display: flex; }
+  .rec-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent2); animation: pulse 1s infinite; }
+
+  #rec-timer {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+  }
+
+  /* NO SIGNAL */
+  #no-signal {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    color: var(--dim);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 13px;
+  }
+
+  .signal-icon {
+    width: 48px; height: 48px;
+    border: 2px solid var(--dim);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px;
+    opacity: 0.5;
+  }
+
+  /* SIDEBAR */
+  .sidebar {
+    width: 220px;
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+    gap: 16px;
+    flex-shrink: 0;
+  }
+
+  .section-label {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    color: var(--dim);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 6px;
+  }
+
+  /* BUTTONS */
+  .btn {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    text-transform: uppercase;
+  }
+
+  .btn:hover { background: rgba(255,255,255,0.04); border-color: var(--accent); color: var(--accent); }
+
+  .btn.record-btn { border-color: var(--accent2); color: var(--accent2); }
+  .btn.record-btn:hover { background: rgba(255,61,87,0.1); }
+  .btn.record-btn.recording { background: rgba(255,61,87,0.15); animation: borderPulse 1.5s infinite; }
+
+  @keyframes borderPulse {
+    0%,100% { border-color: var(--accent2); }
+    50% { border-color: rgba(255,61,87,0.3); }
+  }
+
+  .btn.snapshot-btn { border-color: var(--accent); color: var(--accent); }
+  .btn.snapshot-btn:hover { background: rgba(0,229,255,0.08); }
+
+  /* STATS */
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    font-size: 13px;
+  }
+  .stat-label { color: var(--dim); font-size: 12px; }
+  .stat-value { font-family: 'Share Tech Mono', monospace; font-size: 12px; color: var(--accent); }
+
+  /* RECORDINGS LIST */
+  .recordings-list {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .recordings-list::-webkit-scrollbar { width: 3px; }
+  .recordings-list::-webkit-scrollbar-track { background: transparent; }
+  .recordings-list::-webkit-scrollbar-thumb { background: var(--border); }
+
+  .recording-item {
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .rec-name {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    color: var(--accent3);
+  }
+
+  .rec-info {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    color: var(--dim);
+  }
+
+  /* TOAST */
+  #toast {
+    position: fixed;
+    bottom: 20px; left: 50%;
+    transform: translateX(-50%) translateY(60px);
+    background: var(--panel);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    padding: 8px 20px;
+    border-radius: 2px;
+    transition: transform 0.3s;
+    z-index: 100;
+  }
+  #toast.show { transform: translateX(-50%) translateY(0); }
+
+  /* CONNECT INPUT */
+  .connect-section input {
+    width: 100%;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    padding: 7px 10px;
+    border-radius: 2px;
+    margin-bottom: 6px;
+    outline: none;
+  }
+  .connect-section input:focus { border-color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">VNA<span>//</span>CAM<span>_</span>VIEWER</div>
+  <div id="status-badge">
+    <div class="dot" id="dot"></div>
+    <span id="status-text">DISCONNECTED</span>
+  </div>
+  <div class="time-display" id="clock">--:--:--</div>
+</header>
+
+<div class="main">
+  <div class="video-container">
+    <div class="corner tl"></div>
+    <div class="corner tr"></div>
+    <div class="corner bl"></div>
+    <div class="corner br"></div>
+
+    <div id="no-signal">
+      <div class="signal-icon">⊘</div>
+      <span>NO SIGNAL</span>
+      <span style="font-size:10px;color:#2d3748">Nhập địa chỉ WebSocket và kết nối</span>
+    </div>
+
+    <img id="frame" style="display:none" />
+
+    <div id="rec-overlay">
+      <div class="rec-dot"></div>
+      <span>REC</span>
+      <span id="rec-timer">00:00</span>
+    </div>
+  </div>
+
+  <div class="sidebar">
+    <div class="connect-section">
+      <div class="section-label">// Connection</div>
+      <input type="text" id="ws-url" value="ws://100.64.0.17:8080/ws" placeholder="ws://IP:PORT/ws" />
+      <button class="btn" id="connect-btn" onclick="toggleConnect()">⚡ Connect</button>
+    </div>
+
+    <div>
+      <div class="section-label">// Controls</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <button class="btn snapshot-btn" onclick="takeSnapshot()">📷 Snapshot</button>
+        <button class="btn record-btn" id="record-btn" onclick="toggleRecord()">⏺ Start Record</button>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">// Stats</div>
+      <div class="stat-row">
+        <span class="stat-label">FPS</span>
+        <span class="stat-value" id="stat-fps">--</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Frames</span>
+        <span class="stat-value" id="stat-frames">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Resolution</span>
+        <span class="stat-value" id="stat-res">--</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Server Recs</span>
+        <span class="stat-value" id="stat-recorded">0</span>
+      </div>
+    </div>
+
+    <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+      <div class="section-label">// Server Logs</div>
+      <div class="recordings-list" id="recordings-list">
+        <div style="color:var(--dim);font-family:'Share Tech Mono',monospace;font-size:11px;text-align:center;margin-top:20px">
+          No records yet
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+let ws = null;
+let isConnected = false;
+let isRecording = false;
+let recStartTime = null;
+let recTimerInterval = null;
+let frameCount = 0;
+let lastFpsTime = Date.now();
+let fpsCount = 0;
+let currentFrame = null;
+let recordingCount = 0;
+
+// CLOCK
+setInterval(() => {
+  document.getElementById('clock').textContent = new Date().toTimeString().slice(0,8);
+}, 1000);
+
+// CONNECT / DISCONNECT
+function toggleConnect() {
+  if (isConnected) disconnect();
+  else connect();
+}
+
+function connect() {
+  const url = document.getElementById('ws-url').value.trim();
+  if (!url) return;
+
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    isConnected = true;
+    document.getElementById('dot').className = 'dot live';
+    document.getElementById('status-text').textContent = 'LIVE';
+    document.getElementById('connect-btn').textContent = '✕ Disconnect';
+    document.getElementById('no-signal').style.display = 'none';
+    document.getElementById('frame').style.display = 'block';
+    showToast('✅ Kết nối thành công!');
+  };
+
+  ws.onmessage = (event) => {
+    const img = document.getElementById('frame');
+    img.src = 'data:image/jpeg;base64,' + event.data;
+    currentFrame = event.data;
+
+    // FPS counter
+    fpsCount++;
+    frameCount++;
+    document.getElementById('stat-frames').textContent = frameCount;
+    
+    const now = Date.now();
+    if (now - lastFpsTime >= 1000) {
+      document.getElementById('stat-fps').textContent = fpsCount;
+      fpsCount = 0;
+      lastFpsTime = now;
+    }
+
+    // Resolution (Chỉ lấy 1 lần đầu để tránh tốn tài nguyên)
+    if (frameCount === 1) {
+      img.onload = () => {
+        document.getElementById('stat-res').textContent = `${img.naturalWidth}×${img.naturalHeight}`;
+      };
+    }
+  };
+
+  ws.onclose = () => {
+    isConnected = false;
+    document.getElementById('dot').className = 'dot error';
+    document.getElementById('status-text').textContent = 'DISCONNECTED';
+    document.getElementById('connect-btn').textContent = '⚡ Connect';
+    document.getElementById('no-signal').style.display = 'flex';
+    document.getElementById('frame').style.display = 'none';
+    if (isRecording) stopRecord(true); // Bị ngắt kết nối đột ngột
+    showToast('❌ Mất kết nối!');
+  };
+
+  ws.onerror = () => {
+    showToast('❌ Không thể kết nối WebSocket!');
+  };
+}
+
+function disconnect() {
+  if (ws) ws.close();
+}
+
+// SNAPSHOT (Vẫn lưu về máy Client bình thường)
+function takeSnapshot() {
+  if (!currentFrame) { showToast('⚠️ Chưa có frame!'); return; }
+  const a = document.createElement('a');
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0,19);
+  a.download = `snapshot_${ts}.jpg`;
+  a.href = 'data:image/jpeg;base64,' + currentFrame;
+  a.click();
+  showToast('📷 Snapshot đã lưu về máy!');
+}
+
+// RECORD (Gửi lệnh cho Jetson ghi MP4)
+function toggleRecord() {
+  if (!isRecording) startRecord();
+  else stopRecord(false);
+}
+
+function startRecord() {
+  if (!isConnected || !ws) { showToast('⚠️ Chưa kết nối camera!'); return; }
+
+  ws.send("START_REC"); // Gửi tín hiệu xuống Backend
+  
+  isRecording = true;
+  recStartTime = Date.now();
+
+  document.getElementById('rec-overlay').classList.add('active');
+  document.getElementById('record-btn').classList.add('recording');
+  document.getElementById('record-btn').textContent = '⏹ Stop Record';
+
+  recTimerInterval = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - recStartTime) / 1000);
+    const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
+    const s = String(elapsed % 60).padStart(2, '0');
+    document.getElementById('rec-timer').textContent = `${m}:${s}`;
+  }, 1000);
+
+  showToast('⏺ Jetson đang ghi video MP4!');
+}
+
+function stopRecord(forceStop) {
+  if (!isRecording) return;
+  
+  if (!forceStop && ws && isConnected) {
+      ws.send("STOP_REC"); // Báo Jetson ngừng ghi
+  }
+  
+  isRecording = false;
+  clearInterval(recTimerInterval);
+  
+  const elapsed = Math.floor((Date.now() - recStartTime) / 1000);
+  const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
+  const s = String(elapsed % 60).padStart(2, '0');
+  const duration = `${m}:${s}`;
+
+  document.getElementById('rec-overlay').classList.remove('active');
+  document.getElementById('record-btn').classList.remove('recording');
+  document.getElementById('record-btn').textContent = '⏺ Start Record';
+  document.getElementById('rec-timer').textContent = '00:00';
+  
+  showToast('💾 Đã lưu file MP4 trên Jetson!');
+  
+  // Cập nhật UI Log
+  recordingCount++;
+  document.getElementById('stat-recorded').textContent = recordingCount;
+  addServerRecordingLog(duration);
+}
+
+// Thêm Log vào danh sách (Lưu ý: File được lưu trên Server/Jetson, không tải về trực tiếp)
+function addServerRecordingLog(duration) {
+  const list = document.getElementById('recordings-list');
+  const placeholder = list.querySelector('div[style]');
+  if (placeholder) placeholder.remove();
+
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0,19);
+  const item = document.createElement('div');
+  item.className = 'recording-item';
+  item.innerHTML = `
+    <div class="rec-name">record_${ts}.mp4</div>
+    <div class="rec-info">Duration: ${duration} | Saved on Jetson</div>
+  `;
+  list.insertBefore(item, list.firstChild);
+}
+
+// TOAST
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+// Enter to connect
+document.getElementById('ws-url').addEventListener('keydown', e => {
+  if (e.key === 'Enter') connect();
+});
+</script>
+</body>
+</html>
