@@ -1,12 +1,14 @@
 from collections import deque
 
-from ppe_monitor.config import (
+from ppe_monitor_core.config import (
+    HELMET_SAFE_RATIO_THRES,
+    HELMET_VIOLATION_RATIO_THRES,
     MIN_HISTORY_TO_DECIDE,
-    SAFE_RATIO_THRES,
     TEMPORAL_WINDOW,
     TRACK_IOU_THRES,
     TRACK_TTL,
-    VIOLATION_RATIO_THRES,
+    VEST_SAFE_RATIO_THRES,
+    VEST_VIOLATION_RATIO_THRES,
 )
 
 
@@ -19,30 +21,32 @@ def bbox_iou(box_a, box_b):
     ix2 = min(ax2, bx2)
     iy2 = min(ay2, by2)
 
-    iw = max(0.0, ix2 - ix1)
-    ih = max(0.0, iy2 - iy1)
-    inter = iw * ih
+    inter_w = max(0.0, ix2 - ix1)
+    inter_h = max(0.0, iy2 - iy1)
+    inter_area = inter_w * inter_h
 
     area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
     area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
-    union = area_a + area_b - inter
+    union = area_a + area_b - inter_area
     if union <= 0:
         return 0.0
 
-    return inter / union
+    return inter_area / union
 
 
-def get_track_id(person_box, tracks, frame_idx):
+def get_track_id(person_box, tracks, frame_idx, assigned_track_ids):
     best_id = None
     best_iou = 0.0
 
     for track_id, track in tracks.items():
+        if track_id in assigned_track_ids:
+            continue
         if frame_idx - track["last_seen"] > TRACK_TTL:
             continue
 
-        iou = bbox_iou(person_box, track["bbox"])
-        if iou > best_iou:
-            best_iou = iou
+        current_iou = bbox_iou(person_box, track["bbox"])
+        if current_iou > best_iou:
+            best_iou = current_iou
             best_id = track_id
 
     if best_id is not None and best_iou >= TRACK_IOU_THRES:
@@ -59,44 +63,42 @@ def make_new_track(person_box, frame_idx):
         "vest_history": deque(maxlen=TEMPORAL_WINDOW),
         "stable_has_hat": None,
         "stable_has_vest": None,
-        "matched_hat": None,
-        "matched_vest": None,
     }
 
 
 def update_stable_state(track):
     if len(track["hat_history"]) >= MIN_HISTORY_TO_DECIDE:
         hat_ratio = sum(track["hat_history"]) / len(track["hat_history"])
-        if hat_ratio >= SAFE_RATIO_THRES:
+        if hat_ratio >= HELMET_SAFE_RATIO_THRES:
             track["stable_has_hat"] = True
-        elif hat_ratio <= VIOLATION_RATIO_THRES:
+        elif hat_ratio <= HELMET_VIOLATION_RATIO_THRES:
             track["stable_has_hat"] = False
 
     if len(track["vest_history"]) >= MIN_HISTORY_TO_DECIDE:
         vest_ratio = sum(track["vest_history"]) / len(track["vest_history"])
-        if vest_ratio >= SAFE_RATIO_THRES:
+        if vest_ratio >= VEST_SAFE_RATIO_THRES:
             track["stable_has_vest"] = True
-        elif vest_ratio <= VIOLATION_RATIO_THRES:
+        elif vest_ratio <= VEST_VIOLATION_RATIO_THRES:
             track["stable_has_vest"] = False
 
 
 def build_person_status(track_id, track):
-    stable_has_hat = track["stable_has_hat"]
-    stable_has_vest = track["stable_has_vest"]
-    hat_ratio = (
-        sum(track["hat_history"]) / len(track["hat_history"])
-        if len(track["hat_history"]) > 0
-        else 0.0
-    )
+    history_len = len(track["hat_history"])
+    hat_ratio = sum(track["hat_history"]) / history_len if history_len > 0 else 0.0
     vest_ratio = (
         sum(track["vest_history"]) / len(track["vest_history"])
         if len(track["vest_history"]) > 0
         else 0.0
     )
-    history_len = len(track["hat_history"])
+    stable_has_hat = track["stable_has_hat"]
+    stable_has_vest = track["stable_has_vest"]
 
-    if stable_has_hat is None or stable_has_vest is None:
-        label = "CHECKING..."
+    if (
+        history_len < MIN_HISTORY_TO_DECIDE
+        or stable_has_hat is None
+        or stable_has_vest is None
+    ):
+        label = "CHECKING PPE..."
         status_color = (0, 255, 255)
         severity = 1
     elif stable_has_hat and stable_has_vest:
@@ -130,5 +132,15 @@ def build_person_status(track_id, track):
         "stable_has_vest": stable_has_vest,
         "hat_ratio": hat_ratio,
         "vest_ratio": vest_ratio,
-        "n_hist": history_len,
+        "history_len": history_len,
     }
+
+
+def prune_expired_tracks(tracks, frame_idx):
+    expired_track_ids = [
+        track_id
+        for track_id, track in tracks.items()
+        if frame_idx - track["last_seen"] > TRACK_TTL
+    ]
+    for track_id in expired_track_ids:
+        del tracks[track_id]

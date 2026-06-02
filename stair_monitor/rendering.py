@@ -10,6 +10,57 @@ from stair_monitor.settings import (
 )
 
 
+def draw_label_with_background(
+    frame,
+    text,
+    x,
+    y,
+    font_scale=0.9,
+    thickness=3,
+    text_color=(255, 255, 255),
+    bg_color=(0, 0, 255),
+    padding=8,
+):
+    if not text:
+        return
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    frame_h, frame_w = frame.shape[:2]
+    (text_w, text_h), baseline = cv2.getTextSize(
+        text,
+        font,
+        font_scale,
+        thickness,
+    )
+
+    box_w = text_w + padding * 2
+    box_h = text_h + baseline + padding * 2
+
+    x1 = max(0, min(int(x), max(0, frame_w - box_w)))
+    y2 = max(box_h, min(int(y), frame_h - 1))
+    x2 = min(frame_w - 1, x1 + box_w)
+    y1 = max(0, y2 - box_h)
+
+    cv2.rectangle(
+        frame,
+        (x1, y1),
+        (x2, y2),
+        bg_color,
+        -1,
+    )
+
+    cv2.putText(
+        frame,
+        text,
+        (x1 + padding, y2 - padding - baseline),
+        font,
+        font_scale,
+        text_color,
+        thickness,
+        cv2.LINE_AA,
+    )
+
+
 def draw_scene_guides(frame, config, analyzer):
     if "CENTER_LINE" in config:
         cv2.line(
@@ -84,15 +135,22 @@ def draw_person_overlay(frame, box, keypoints, lane_point, motion_point, analysi
             return
 
         x1, y1, x2, y2 = map(int, box)
-        cv2.rectangle(frame, (x1, y1), (x2, y2), VIOLATION_COLOR, 2)
-        cv2.putText(
+        cv2.rectangle(frame, (x1, y1), (x2, y2), VIOLATION_COLOR, 3)
+
+        label_y = y2 + 42
+        if label_y > frame.shape[0] - 5:
+            label_y = y1 - 8
+
+        draw_label_with_background(
             frame,
             display_status,
-            (x1, y2 + 25),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            VIOLATION_COLOR,
-            2,
+            x1,
+            label_y,
+            font_scale=0.9,
+            thickness=3,
+            text_color=(255, 255, 255),
+            bg_color=VIOLATION_COLOR,
+            padding=8,
         )
         return
 
@@ -245,11 +303,13 @@ def build_debug_lines(analysis):
         f"HOLD_RAW:{analysis.get('holding_raw', False)}",
         f"HOLD_RAW_STATUS:{analysis.get('hold_raw_status', 'UNKNOWN')}",
         f"HOLD:{analysis.get('holding', False)}",
-        f"HOLD_STATUS:{analysis.get('hold_status', 'UNKNOWN')}",
+        f"HOLD_FINAL_STATUS:{analysis.get('hold_status', 'UNKNOWN')}",
         f"HOLD_CORRECT_HITS:{analysis.get('hold_correct_hits', 0)}",
         f"HOLD_WRONG_HITS:{analysis.get('hold_wrong_side_hits', 0)}",
         f"HOLD_NONE_HITS:{analysis.get('hold_none_hits', 0)}",
         f"HOLD_UNKNOWN_HITS:{analysis.get('hold_unknown_hits', 0)}",
+        f"HOLD_NOT_HOLD_EVIDENCE_HITS:{analysis.get('hold_not_hold_evidence_hits', 0)}",
+        f"NOT_HOLD_BY_EVIDENCE:{analysis.get('not_hold_by_evidence', False)}",
         f"HOLD_CONF:{analysis.get('hold_confirmed_status', 'UNKNOWN')}",
         f"L_CARRY:{analysis.get('left_carry', False)}",
         f"R_CARRY:{analysis.get('right_carry', False)}",

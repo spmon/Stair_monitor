@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-from ppe_monitor.config import (
+from ppe_monitor_ROI.config import (
     DEBUG_MODE,
     DEBUG_RAW_PPE,
     HAT_CLASS_ID,
@@ -19,7 +19,7 @@ from ppe_monitor.config import (
     VIDEO_OUTPUT_PATH,
     VEST_CLASS_ID,
 )
-from ppe_monitor.rendering import (
+from ppe_monitor_ROI.rendering import (
     draw_foot_debug,
     draw_person_debug,
     draw_raw_ppe,
@@ -27,8 +27,14 @@ from ppe_monitor.rendering import (
     draw_status_panel,
     get_overall_status,
 )
-from ppe_monitor.roi import ROI_PTS, foot_in_roi, get_head_bbox, get_torso_bbox, overlap_ratio
-from ppe_monitor.tracking import (
+from ppe_monitor_ROI.roi import (
+    ROI_PTS,
+    foot_in_roi,
+    get_head_bbox,
+    get_torso_bbox,
+    overlap_ratio,
+)
+from ppe_monitor_ROI.tracking import (
     build_person_status,
     get_track_id,
     make_new_track,

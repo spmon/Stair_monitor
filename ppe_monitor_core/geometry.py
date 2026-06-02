@@ -1,36 +1,8 @@
 import numpy as np
-from shapely.geometry import Point, Polygon
-
-from ppe_monitor.config import ROI_COORDS
-
-ROI_POLYGON = Polygon(ROI_COORDS)
-ROI_PTS = np.array(ROI_COORDS, np.int32).reshape((-1, 1, 2))
 
 
 def is_point_valid(point):
     return point[0] > 0 and point[1] > 0
-
-
-def is_foot_point_in_roi(foot):
-    if not is_point_valid(foot):
-        return False
-
-    foot_point = Point(float(foot[0]), float(foot[1]))
-    return ROI_POLYGON.contains(foot_point) or ROI_POLYGON.touches(foot_point)
-
-
-def foot_in_roi(keypoints):
-    left_ankle = keypoints[15]
-    right_ankle = keypoints[16]
-
-    for foot in [left_ankle, right_ankle]:
-        if not is_point_valid(foot):
-            continue
-
-        if is_foot_point_in_roi(foot):
-            return True
-
-    return False
 
 
 def overlap_ratio(box_a, box_b):
@@ -42,16 +14,16 @@ def overlap_ratio(box_a, box_b):
     ix2 = min(ax2, bx2)
     iy2 = min(ay2, by2)
 
-    iw = max(0.0, ix2 - ix1)
-    ih = max(0.0, iy2 - iy1)
-    inter = iw * ih
+    inter_w = max(0.0, ix2 - ix1)
+    inter_h = max(0.0, iy2 - iy1)
+    inter_area = inter_w * inter_h
 
     area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
     area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
     if area_a <= 0 or area_b <= 0:
         return 0.0
 
-    return inter / min(area_a, area_b)
+    return inter_area / min(area_a, area_b)
 
 
 def get_head_bbox(keypoints, person_box=None):
