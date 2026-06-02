@@ -42,7 +42,7 @@ Phần cứng dự kiến: Jetson Orin Nano + camera cố định.
 
 | File | Vai trò |
 | --- | --- |
-| `main.py` | Backend FastAPI + WebSocket để stream RTSP và nhận lệnh bắt đầu / dừng ghi video. |
+| `main.py` | Backend FastAPI + WebSocket để stream RTSP và nhận lệnh bắt đầu / dừng ghi video. file này chạy trên jetson orin nano để lấy dữ liệu.|
 | `viewer.html` | Giao diện web xem luồng camera qua WebSocket. |
 | `test-cauthang.py` | Entrypoint chạy demo giám sát hành vi cầu thang. |
 | `ppe.py` | Entrypoint chạy PPE monitor theo ROI. |
@@ -362,13 +362,3 @@ python pose-test.py
 - `danger_zone_monitor.py`
 - `camera_config.json`
 
-## 10. Gợi ý khi push lên git
-
-Không nên push các file sinh ra trong quá trình chạy nếu không cần thiết:
-
-- `venv/`
-- `runs/`
-- video record output lớn
-- model weight lớn nếu repo không chủ đích lưu model
-
-Hiện `.gitignore` đã bỏ qua một số thư mục sinh tự động như `runs/`, `venv/`, `__pycache__/`, `video/`.
