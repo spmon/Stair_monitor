@@ -4,7 +4,7 @@ from stair_monitor.settings import (
     BACKWARD_HISTORY_LEN,
     BACKWARD_MIN_HITS,
     HOLD_HISTORY_LEN,
-    HOLD_MIN_NOT_HOLD_HITS,
+    HOLD_MIN_NOT_HOLD_EVIDENCE_HITS,
     HOLD_MIN_WRONG_SIDE_HITS,
     LANE_HISTORY_LEN,
     LANE_MIN_WRONG_HITS,
@@ -45,6 +45,7 @@ class BehaviorHistoryMixin:
         hold_wrong_side_hits = sum(1 for status in history if status == "WRONG_SIDE")
         hold_none_hits = sum(1 for status in history if status == "NONE")
         hold_unknown_hits = sum(1 for status in history if status == "UNKNOWN")
+        hold_not_hold_evidence_hits = hold_none_hits + hold_unknown_hits
 
         hold_correct_confirmed = (
             hold_correct_hits > 0
@@ -54,9 +55,8 @@ class BehaviorHistoryMixin:
             len(history) >= HOLD_HISTORY_LEN
             and hold_wrong_side_hits >= HOLD_MIN_WRONG_SIDE_HITS
         )
-        hold_none_confirmed = (
-            len(history) >= HOLD_HISTORY_LEN
-            and hold_none_hits >= HOLD_MIN_NOT_HOLD_HITS
+        hold_not_hold_evidence_confirmed = (
+            hold_not_hold_evidence_hits >= HOLD_MIN_NOT_HOLD_EVIDENCE_HITS
         )
 
         if hold_wrong_side_confirmed:
@@ -65,7 +65,7 @@ class BehaviorHistoryMixin:
         elif hold_correct_confirmed:
             hold_final_status = "CORRECT"
             holding = True
-        elif hold_none_confirmed:
+        elif hold_not_hold_evidence_confirmed:
             hold_final_status = "NONE"
             holding = False
         elif (
@@ -83,6 +83,7 @@ class BehaviorHistoryMixin:
             hold_wrong_side_hits,
             hold_none_hits,
             hold_unknown_hits,
+            hold_not_hold_evidence_hits,
             hold_final_status,
             holding,
         )

@@ -1,18 +1,19 @@
 from stair_monitor.settings import (
     DEMO_MODE,
     DRAW_SAFE_STATUS,
+    HOLD_MIN_NOT_HOLD_EVIDENCE_HITS,
     UNKNOWN_COLOR,
     VIOLATION_COLOR,
 )
 
-REAL_VIOLATION_LABELS = (
+REAL_VIOLATION_LABELS = [
     "Sai Lan",
     "Khong Vin",
     "Vin Sai Ben",
     "Mang Vac",
     "Di Lui",
     "Dung Yen",
-)
+]
 RESULT_CONTEXT_FIELDS = (
     ("dy", "dy"),
     ("lane_v", "v"),
@@ -31,6 +32,7 @@ RESULT_CONTEXT_FIELDS = (
     ("hold_wrong_side_hits", "hold_wrong_side_hits"),
     ("hold_none_hits", "hold_none_hits"),
     ("hold_unknown_hits", "hold_unknown_hits"),
+    ("hold_not_hold_evidence_hits", "hold_not_hold_evidence_hits"),
     ("holding_correct_raw", "holding_correct_raw"),
     ("holding_wrong_raw", "holding_wrong_raw"),
     ("hold_status_correct", "hold_status_correct"),
@@ -119,10 +121,10 @@ class ResultBuilderMixin:
         warnings = []
         if wrong_lane:
             warnings.append("Sai Lan")
-        if hold_final_status == "NONE":
-            warnings.append("Khong Vin")
-        elif hold_final_status == "WRONG_SIDE":
+        if hold_final_status == "WRONG_SIDE":
             warnings.append("Vin Sai Ben")
+        elif hold_final_status == "NONE":
+            warnings.append("Khong Vin")
         elif hold_final_status == "UNKNOWN" and not DEMO_MODE:
             warnings.append("Khong Xac Dinh")
         if is_carrying:
@@ -155,7 +157,7 @@ class ResultBuilderMixin:
             color = safe_color
 
         status_warnings = list(warnings)
-        if hold_final_status == "UNKNOWN" and "Khong Xac Dinh" not in status_warnings:
+        if hold_final_status == "UNKNOWN" and not DEMO_MODE and "Khong Xac Dinh" not in status_warnings:
             status_warnings.append("Khong Xac Dinh")
 
         status = (
@@ -218,6 +220,7 @@ class ResultBuilderMixin:
         hold_wrong_side_hits=0,
         hold_none_hits=0,
         hold_unknown_hits=0,
+        hold_not_hold_evidence_hits=0,
         holding_correct_raw=False,
         holding_wrong_raw=False,
         hold_status_correct="UNKNOWN",
@@ -280,6 +283,10 @@ class ResultBuilderMixin:
         standing_motion_range=None,
         standing_len=0,
     ):
+        not_hold_by_evidence = (
+            hold_status == "NONE"
+            and hold_not_hold_evidence_hits >= HOLD_MIN_NOT_HOLD_EVIDENCE_HITS
+        )
         return {
             "status": status,
             "display_status": display_status,
@@ -301,6 +308,8 @@ class ResultBuilderMixin:
             "hold_wrong_side_hits": hold_wrong_side_hits,
             "hold_none_hits": hold_none_hits,
             "hold_unknown_hits": hold_unknown_hits,
+            "hold_not_hold_evidence_hits": hold_not_hold_evidence_hits,
+            "not_hold_by_evidence": not_hold_by_evidence,
             "holding_correct_raw": holding_correct_raw,
             "holding_wrong_raw": holding_wrong_raw,
             "hold_status_correct": hold_status_correct,

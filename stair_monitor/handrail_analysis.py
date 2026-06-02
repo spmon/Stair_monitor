@@ -49,7 +49,7 @@ def get_best_wrist_for_handrail_by_rule(keypoints, line, rule, segment_max_dista
         )
         valid_d = False
         if rule == LEFT_HANDRAIL_RULE:
-            valid_d = -LEFT_HANDRAIL_MAX_DISTANCE <= d <= -0
+            valid_d = -LEFT_HANDRAIL_MAX_DISTANCE <= d <= -10
         elif rule == RIGHT_HANDRAIL_RULE:
             valid_d = 0 <= d <= RIGHT_HANDRAIL_MAX_DISTANCE
         valid_segment = 0.0 <= projection_t <= 1.0 and (
@@ -77,7 +77,7 @@ def get_best_wrist_for_handrail_by_rule(keypoints, line, rule, segment_max_dista
         )
         valid_d = False
         if rule == LEFT_HANDRAIL_RULE:
-            valid_d = -LEFT_HANDRAIL_MAX_DISTANCE <= d <= -0
+            valid_d = -LEFT_HANDRAIL_MAX_DISTANCE <= d <= -10
         elif rule == RIGHT_HANDRAIL_RULE:
             valid_d = 0 <= d <= RIGHT_HANDRAIL_MAX_DISTANCE
         valid_segment = 0.0 <= projection_t <= 1.0 and (

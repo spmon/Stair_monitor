@@ -1,6 +1,6 @@
 import cv2
 
-from ppe_monitor.roi import is_foot_point_in_roi, is_point_valid
+from ppe_monitor_ROI.roi import is_foot_point_in_roi, is_point_valid
 
 
 def draw_foot_debug(frame, keypoints):

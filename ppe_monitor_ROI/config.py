@@ -1,5 +1,5 @@
 VIDEO_INPUT_PATH = "video/raw_video/record_2026-05-30_16-36-39.avi"
-VIDEO_OUTPUT_PATH = "video/ppe_demo/ppe_output_video3.mp4"
+VIDEO_OUTPUT_PATH = "video/ppe_demo/ppe_output_video4.mp4"
 
 HAT_CLASS_ID = 1
 VEST_CLASS_ID = 0

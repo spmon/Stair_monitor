@@ -102,6 +102,7 @@ class BehaviorAnalyzer(
         hold_wrong_side_hits = 0
         hold_none_hits = 0
         hold_unknown_hits = 0
+        hold_not_hold_evidence_hits = 0
 
         holding_correct_raw = False
         holding_wrong_raw = False
@@ -351,6 +352,7 @@ class BehaviorAnalyzer(
             hold_wrong_side_hits,
             hold_none_hits,
             hold_unknown_hits,
+            hold_not_hold_evidence_hits,
             hold_final_status,
             holding,
         ) = self._update_hold_status_history(track_id, hold_raw_status)
