@@ -1,4 +1,8 @@
+import os
+
 import cv2
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 from stair_monitor.settings import (
     DEMO_MODE,
@@ -6,8 +10,154 @@ from stair_monitor.settings import (
     DRAW_KEYPOINTS,
     DRAW_SKELETON,
     SHOW_ONLY_VIOLATIONS,
+    VIOLATION_COUNT_LABELS,
     VIOLATION_COLOR,
+    VIOLATION_DISPLAY_NAMES,
 )
+
+FONT_CACHE = {}
+FONT_CANDIDATES = {
+    False: [
+        "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/tahoma.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+    ],
+    True: [
+        "C:/Windows/Fonts/segoeuib.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",
+        "C:/Windows/Fonts/tahomabd.ttf",
+        "C:/Windows/Fonts/tahoma.ttf",
+    ],
+}
+
+
+def get_vietnamese_font(font_size=28, bold=False):
+    cache_key = (font_size, bold)
+    if cache_key in FONT_CACHE:
+        return FONT_CACHE[cache_key]
+
+    for font_path in FONT_CANDIDATES[bold]:
+        if os.path.exists(font_path):
+            font = ImageFont.truetype(font_path, font_size)
+            FONT_CACHE[cache_key] = font
+            return font
+
+    font = ImageFont.load_default()
+    FONT_CACHE[cache_key] = font
+    return font
+
+
+def _bgr_to_rgb(color):
+    return (color[2], color[1], color[0])
+
+
+def _frame_to_pil(frame):
+    return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+
+def _pil_to_frame(pil_image, frame):
+    frame[:] = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+
+
+def _measure_vietnamese_lines(lines, font_size=28, padding=14, line_gap=8):
+    if not lines:
+        return 0, 0
+
+    probe_image = Image.new("RGB", (1, 1))
+    probe_draw = ImageDraw.Draw(probe_image)
+
+    max_width = 0
+    total_height = padding * 2
+    for idx, line in enumerate(lines):
+        font = get_vietnamese_font(font_size, bold=(idx == 0))
+        bbox = probe_draw.textbbox((0, 0), line, font=font)
+        line_width = bbox[2] - bbox[0]
+        line_height = bbox[3] - bbox[1]
+        max_width = max(max_width, line_width)
+        total_height += line_height
+        if idx < len(lines) - 1:
+            total_height += line_gap
+
+    return max_width + padding * 2, total_height
+
+
+def draw_vietnamese_text(
+    frame,
+    text,
+    position,
+    font_size=28,
+    color=(255, 255, 255),
+    bold=False,
+):
+    if not text:
+        return
+
+    pil_image = _frame_to_pil(frame)
+    draw = ImageDraw.Draw(pil_image)
+    draw.text(
+        (int(position[0]), int(position[1])),
+        text,
+        font=get_vietnamese_font(font_size, bold=bold),
+        fill=_bgr_to_rgb(color),
+    )
+    _pil_to_frame(pil_image, frame)
+
+
+def draw_transparent_panel_with_vietnamese_text(
+    frame,
+    x,
+    y,
+    lines,
+    alpha=0.45,
+    font_size=28,
+    text_color=(255, 255, 255),
+    panel_color=(28, 36, 48),
+    padding=14,
+    line_gap=8,
+    anchor="left",
+):
+    if not lines:
+        return 0, 0
+
+    panel_width, panel_height = _measure_vietnamese_lines(
+        lines,
+        font_size=font_size,
+        padding=padding,
+        line_gap=line_gap,
+    )
+    frame_h, frame_w = frame.shape[:2]
+
+    x1 = int(x - panel_width) if anchor == "right" else int(x)
+    y1 = int(y)
+    x1 = max(0, min(x1, max(0, frame_w - panel_width)))
+    y1 = max(0, min(y1, max(0, frame_h - panel_height)))
+    x2 = x1 + panel_width
+    y2 = y1 + panel_height
+
+    pil_image = _frame_to_pil(frame)
+    draw = ImageDraw.Draw(pil_image, "RGBA")
+    draw.rounded_rectangle(
+        [(x1, y1), (x2, y2)],
+        radius=18,
+        fill=(*_bgr_to_rgb(panel_color), int(255 * alpha)),
+    )
+
+    cursor_y = y1 + padding
+    for idx, line in enumerate(lines):
+        is_title = idx == 0
+        font = get_vietnamese_font(font_size, bold=is_title)
+        bbox = draw.textbbox((0, 0), line, font=font)
+        line_height = bbox[3] - bbox[1]
+        draw.text(
+            (x1 + padding, cursor_y),
+            line,
+            font=font,
+            fill=(*_bgr_to_rgb(text_color), 255),
+        )
+        cursor_y += line_height + line_gap
+
+    _pil_to_frame(pil_image, frame)
+    return panel_width, panel_height
 
 
 def draw_label_with_background(
@@ -24,40 +174,28 @@ def draw_label_with_background(
     if not text:
         return
 
-    font = cv2.FONT_HERSHEY_SIMPLEX
     frame_h, frame_w = frame.shape[:2]
-    (text_w, text_h), baseline = cv2.getTextSize(
-        text,
-        font,
-        font_scale,
-        thickness,
+    font_size = max(20, int(30 * font_scale))
+    box_w, box_h = _measure_vietnamese_lines(
+        [text],
+        font_size=font_size,
+        padding=padding,
+        line_gap=0,
     )
-
-    box_w = text_w + padding * 2
-    box_h = text_h + baseline + padding * 2
 
     x1 = max(0, min(int(x), max(0, frame_w - box_w)))
-    y2 = max(box_h, min(int(y), frame_h - 1))
-    x2 = min(frame_w - 1, x1 + box_w)
-    y1 = max(0, y2 - box_h)
-
-    cv2.rectangle(
+    y1 = max(0, min(int(y - box_h), max(0, frame_h - box_h)))
+    draw_transparent_panel_with_vietnamese_text(
         frame,
-        (x1, y1),
-        (x2, y2),
-        bg_color,
-        -1,
-    )
-
-    cv2.putText(
-        frame,
-        text,
-        (x1 + padding, y2 - padding - baseline),
-        font,
-        font_scale,
-        text_color,
-        thickness,
-        cv2.LINE_AA,
+        x1,
+        y1,
+        [text],
+        alpha=0.65,
+        font_size=font_size,
+        text_color=text_color,
+        panel_color=bg_color,
+        padding=padding,
+        line_gap=0,
     )
 
 
@@ -158,14 +296,16 @@ def draw_person_overlay(frame, box, keypoints, lane_point, motion_point, analysi
     cv2.rectangle(frame, (x1, y1), (x2, y2), analysis["color"], 2)
 
     if display_status:
-        cv2.putText(
+        draw_label_with_background(
             frame,
             display_status,
-            (x1, y2 + 25),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            analysis["color"],
-            2,
+            x1,
+            y2 + 38,
+            font_scale=0.75,
+            thickness=2,
+            text_color=(255, 255, 255),
+            bg_color=analysis["color"],
+            padding=8,
         )
 
     if keypoints is not None and DRAW_KEYPOINTS:
@@ -231,16 +371,72 @@ def draw_person_overlay(frame, box, keypoints, lane_point, motion_point, analysi
 
 
 def draw_people_count(frame, current_inside_count):
-    text = f"So nguoi trong cau thang: {current_inside_count}"
-    cv2.rectangle(frame, (20, 10), (430, 55), (0, 0, 0), -1)
-    cv2.putText(
+    draw_transparent_panel_with_vietnamese_text(
         frame,
-        text,
-        (30, 43),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.9,
-        (255, 255, 255),
-        2,
+        20,
+        20,
+        [
+            "ĐANG TRONG VÙNG",
+            f"Người trong vùng: {current_inside_count}",
+        ],
+        alpha=0.45,
+        font_size=24,
+        panel_color=(44, 56, 82),
+    )
+
+
+def _build_violation_count_lines(title, summary_lines, violation_counts):
+    lines = [title, *summary_lines]
+    for label in VIOLATION_COUNT_LABELS:
+        count = violation_counts.get(label, 0)
+        if count > 0:
+            lines.append(f"{VIOLATION_DISPLAY_NAMES[label]}: {count}")
+    return lines
+
+
+def draw_violation_summary(
+    frame,
+    current_people_count,
+    current_violation_people_count,
+    current_violation_counts,
+    total_violation_people_count,
+    total_violation_counts,
+):
+    font_size = 26 if frame.shape[1] >= 1400 else 22
+    margin = 20
+
+    current_lines = _build_violation_count_lines(
+        "ĐANG VI PHẠM",
+        [
+            f"Người trong vùng: {current_people_count}",
+            
+        ],
+        current_violation_counts,
+    )
+    total_lines = _build_violation_count_lines(
+        "TỔNG TỪ ĐẦU VIDEO",
+        [f"Tổng người từng vi phạm: {total_violation_people_count}"],
+        total_violation_counts,
+    )
+
+    draw_transparent_panel_with_vietnamese_text(
+        frame,
+        margin,
+        margin,
+        current_lines,
+        alpha=0.45,
+        font_size=font_size,
+        panel_color=(48, 64, 96),
+    )
+    draw_transparent_panel_with_vietnamese_text(
+        frame,
+        frame.shape[1] - margin,
+        margin,
+        total_lines,
+        alpha=0.45,
+        font_size=font_size,
+        panel_color=(34, 82, 70),
+        anchor="right",
     )
 
 
