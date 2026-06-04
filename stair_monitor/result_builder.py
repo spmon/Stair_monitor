@@ -4,17 +4,19 @@ from stair_monitor.settings import (
     HOLD_MIN_NOT_HOLD_EVIDENCE_HITS,
     UNKNOWN_COLOR,
     VIOLATION_COLOR,
+    VIOLATION_COUNT_LABELS,
+    VIOLATION_DISPLAY_NAMES,
 )
 
-REAL_VIOLATION_LABELS = [
-    "Sai Lan",
-    "Khong Vin",
-    "Vin Sai Ben",
-    "Mang Vac",
-    "Di Lui",
-    "Dung Yen",
-]
+REAL_VIOLATION_LABELS = list(VIOLATION_COUNT_LABELS)
+DISPLAY_TEXT_REPLACEMENTS = {
+    **VIOLATION_DISPLAY_NAMES,
+    "Khong Xac Dinh": "Không xác định",
+    "Ngoai Vung": "Ngoài vùng",
+    "An Toan": "An toàn",
+}
 RESULT_CONTEXT_FIELDS = (
+    ("track_id", "track_id"),
     ("dy", "dy"),
     ("lane_v", "v"),
     ("direction", "direction"),
@@ -69,6 +71,7 @@ RESULT_CONTEXT_FIELDS = (
     ("standing_still_confirmed", "standing_still_confirmed"),
     ("standing_motion_range", "standing_motion_range"),
     ("standing_len", "standing_len"),
+    ("warnings", "warnings"),
 )
 CARRY_RESULT_FIELDS = (
     "is_carrying",
@@ -101,13 +104,22 @@ CARRY_RESULT_FIELDS = (
 
 class ResultBuilderMixin:
     @staticmethod
+    def _translate_display_text(text):
+        translated = text or ""
+        for internal_label, display_label in DISPLAY_TEXT_REPLACEMENTS.items():
+            translated = translated.replace(internal_label, display_label)
+        return translated
+
+    @staticmethod
     def _build_display_status(direction, warnings):
         if DEMO_MODE:
-            return " - ".join(warnings)
+            return ResultBuilderMixin._translate_display_text(" - ".join(warnings))
         if warnings:
-            return f"{direction} | {' - '.join(warnings)}"
+            return ResultBuilderMixin._translate_display_text(
+                f"{direction} | {' - '.join(warnings)}"
+            )
         if DRAW_SAFE_STATUS:
-            return f"{direction} | An Toan"
+            return ResultBuilderMixin._translate_display_text(f"{direction} | An Toan")
         return ""
 
     @staticmethod
@@ -165,6 +177,7 @@ class ResultBuilderMixin:
             if status_warnings
             else safe_status
         )
+        status = self._translate_display_text(status)
         display_status = self._build_display_status(direction, real_warnings)
         return status, display_status, color
 
@@ -203,6 +216,7 @@ class ResultBuilderMixin:
         status,
         color,
         display_status="",
+        track_id=None,
         dy=None,
         lane_v=None,
         direction="NA",
@@ -282,6 +296,7 @@ class ResultBuilderMixin:
         standing_still_confirmed=False,
         standing_motion_range=None,
         standing_len=0,
+        warnings=None,
     ):
         not_hold_by_evidence = (
             hold_status == "NONE"
@@ -291,6 +306,7 @@ class ResultBuilderMixin:
             "status": status,
             "display_status": display_status,
             "color": color,
+            "track_id": track_id,
             "dy": dy,
             "lane_v": lane_v,
             "direction": direction,
@@ -371,4 +387,5 @@ class ResultBuilderMixin:
             "standing_still_confirmed": standing_still_confirmed,
             "standing_motion_range": standing_motion_range,
             "standing_len": standing_len,
+            "warnings": list(warnings) if warnings is not None else [],
         }
