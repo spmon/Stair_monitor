@@ -6,8 +6,8 @@ import numpy as np
 from shapely.geometry import Point, Polygon
 from ultralytics import YOLO
 
-VIDEO_INPUT_PATH = "video/raw_video/record_2026-05-27_11-01-19.avi"
-VIDEO_OUTPUT_PATH = "video/roi_warning_output.mp4"
+VIDEO_INPUT_PATH = "video/raw_video/record_2026-06-05_14-50-03.avi"
+VIDEO_OUTPUT_PATH = "video/roi_warning_output2.mp4"
 
 POSE_MODEL_PATH = "yolo11x-pose.pt"
 
@@ -16,20 +16,20 @@ PERSON_CONF_THRES = 0.6
 DEBUG_MODE = False
 
 roi_coords = [
-    [
-            470,
-            753
+     [
+            748,
+            727
         ],
         [
-            1312,
-            698
+            1568,
+            662
         ],
         [
-            1251,
-            1291
+            1558,
+            1293
         ],
         [
-            309,
+            609,
             1294
         ]
 ]

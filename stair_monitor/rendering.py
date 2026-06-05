@@ -4,11 +4,16 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from stair_monitor.geometry import extract_pose_features
 from stair_monitor.settings import (
     DEMO_MODE,
     DRAW_DEBUG_DETAIL,
     DRAW_KEYPOINTS,
     DRAW_SKELETON,
+    ENABLE_DEBUG_OVERLAY,
+    ENABLE_SUMMARY_PANEL,
+    ENABLE_VERBOSE_PERSON_DEBUG,
+    ENABLE_VIETNAMESE_TEXT,
     SHOW_ONLY_VIOLATIONS,
     VIOLATION_COUNT_LABELS,
     VIOLATION_COLOR,
@@ -81,6 +86,185 @@ def _measure_vietnamese_lines(lines, font_size=28, padding=14, line_gap=8):
     return max_width + padding * 2, total_height
 
 
+class VietnameseTextDrawer:
+    def __init__(self, frame, enabled=True):
+        self.frame = frame
+        self.enabled = enabled and ENABLE_VIETNAMESE_TEXT
+        self.operations = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if not self.enabled or not self.operations:
+            self.operations = []
+            return
+
+        pil_image = _frame_to_pil(self.frame)
+        draw = ImageDraw.Draw(pil_image, "RGBA")
+
+        for op in self.operations:
+            if op["type"] == "text":
+                draw.text(
+                    (int(op["position"][0]), int(op["position"][1])),
+                    op["text"],
+                    font=get_vietnamese_font(op["font_size"], bold=op["bold"]),
+                    fill=_bgr_to_rgb(op["color"]),
+                )
+                continue
+
+            if op["type"] != "panel":
+                continue
+
+            x = op["x"]
+            y = op["y"]
+            lines = op["lines"]
+            alpha = op["alpha"]
+            font_size = op["font_size"]
+            text_color = op["text_color"]
+            panel_color = op["panel_color"]
+            padding = op["padding"]
+            line_gap = op["line_gap"]
+            anchor = op["anchor"]
+
+            panel_width, panel_height = _measure_vietnamese_lines(
+                lines,
+                font_size=font_size,
+                padding=padding,
+                line_gap=line_gap,
+            )
+            frame_h, frame_w = self.frame.shape[:2]
+
+            x1 = int(x - panel_width) if anchor == "right" else int(x)
+            y1 = int(y)
+            x1 = max(0, min(x1, max(0, frame_w - panel_width)))
+            y1 = max(0, min(y1, max(0, frame_h - panel_height)))
+            x2 = x1 + panel_width
+            y2 = y1 + panel_height
+
+            draw.rounded_rectangle(
+                [(x1, y1), (x2, y2)],
+                radius=18,
+                fill=(*_bgr_to_rgb(panel_color), int(255 * alpha)),
+            )
+
+            cursor_y = y1 + padding
+            for idx, line in enumerate(lines):
+                is_title = idx == 0
+                font = get_vietnamese_font(font_size, bold=is_title)
+                bbox = draw.textbbox((0, 0), line, font=font)
+                line_height = bbox[3] - bbox[1]
+                draw.text(
+                    (x1 + padding, cursor_y),
+                    line,
+                    font=font,
+                    fill=(*_bgr_to_rgb(text_color), 255),
+                )
+                cursor_y += line_height + line_gap
+
+        _pil_to_frame(pil_image, self.frame)
+        self.operations = []
+
+    def text(self, text, position, font_size=28, color=(255, 255, 255), bold=False):
+        if not text:
+            return
+        if not self.enabled:
+            cv2.putText(
+                self.frame,
+                text,
+                (int(position[0]), int(position[1] + font_size)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                max(font_size / 36.0, 0.5),
+                color,
+                2 if bold else 1,
+            )
+            return
+
+        self.operations.append(
+            {
+                "type": "text",
+                "text": text,
+                "position": (int(position[0]), int(position[1])),
+                "font_size": font_size,
+                "color": color,
+                "bold": bold,
+            }
+        )
+
+    def transparent_panel(
+        self,
+        x,
+        y,
+        lines,
+        alpha=0.45,
+        font_size=28,
+        text_color=(255, 255, 255),
+        panel_color=(28, 36, 48),
+        padding=14,
+        line_gap=8,
+        anchor="left",
+    ):
+        if not lines:
+            return 0, 0
+
+        panel_width, panel_height = _measure_vietnamese_lines(
+            lines,
+            font_size=font_size,
+            padding=padding,
+            line_gap=line_gap,
+        )
+        frame_h, frame_w = self.frame.shape[:2]
+
+        x1 = int(x - panel_width) if anchor == "right" else int(x)
+        y1 = int(y)
+        x1 = max(0, min(x1, max(0, frame_w - panel_width)))
+        y1 = max(0, min(y1, max(0, frame_h - panel_height)))
+        x2 = x1 + panel_width
+        y2 = y1 + panel_height
+
+        if not self.enabled:
+            overlay = self.frame.copy()
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), panel_color, -1)
+            cv2.addWeighted(
+                overlay,
+                alpha,
+                self.frame,
+                1.0 - alpha,
+                0,
+                dst=self.frame,
+            )
+            cursor_y = y1 + padding + font_size
+            for line in lines:
+                cv2.putText(
+                    self.frame,
+                    line,
+                    (x1 + padding, cursor_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    max(font_size / 36.0, 0.5),
+                    text_color,
+                    1,
+                )
+                cursor_y += font_size + line_gap
+            return panel_width, panel_height
+
+        self.operations.append(
+            {
+                "type": "panel",
+                "x": x,
+                "y": y,
+                "lines": list(lines),
+                "alpha": alpha,
+                "font_size": font_size,
+                "text_color": text_color,
+                "panel_color": panel_color,
+                "padding": padding,
+                "line_gap": line_gap,
+                "anchor": anchor,
+            }
+        )
+        return panel_width, panel_height
+
+
 def draw_vietnamese_text(
     frame,
     text,
@@ -88,19 +272,29 @@ def draw_vietnamese_text(
     font_size=28,
     color=(255, 255, 255),
     bold=False,
+    text_drawer=None,
 ):
     if not text:
         return
 
-    pil_image = _frame_to_pil(frame)
-    draw = ImageDraw.Draw(pil_image)
-    draw.text(
-        (int(position[0]), int(position[1])),
-        text,
-        font=get_vietnamese_font(font_size, bold=bold),
-        fill=_bgr_to_rgb(color),
-    )
-    _pil_to_frame(pil_image, frame)
+    if text_drawer is not None:
+        text_drawer.text(
+            text,
+            position,
+            font_size=font_size,
+            color=color,
+            bold=bold,
+        )
+        return
+
+    with VietnameseTextDrawer(frame) as drawer:
+        drawer.text(
+            text,
+            position,
+            font_size=font_size,
+            color=color,
+            bold=bold,
+        )
 
 
 def draw_transparent_panel_with_vietnamese_text(
@@ -115,49 +309,38 @@ def draw_transparent_panel_with_vietnamese_text(
     padding=14,
     line_gap=8,
     anchor="left",
+    text_drawer=None,
 ):
     if not lines:
         return 0, 0
 
-    panel_width, panel_height = _measure_vietnamese_lines(
-        lines,
-        font_size=font_size,
-        padding=padding,
-        line_gap=line_gap,
-    )
-    frame_h, frame_w = frame.shape[:2]
-
-    x1 = int(x - panel_width) if anchor == "right" else int(x)
-    y1 = int(y)
-    x1 = max(0, min(x1, max(0, frame_w - panel_width)))
-    y1 = max(0, min(y1, max(0, frame_h - panel_height)))
-    x2 = x1 + panel_width
-    y2 = y1 + panel_height
-
-    pil_image = _frame_to_pil(frame)
-    draw = ImageDraw.Draw(pil_image, "RGBA")
-    draw.rounded_rectangle(
-        [(x1, y1), (x2, y2)],
-        radius=18,
-        fill=(*_bgr_to_rgb(panel_color), int(255 * alpha)),
-    )
-
-    cursor_y = y1 + padding
-    for idx, line in enumerate(lines):
-        is_title = idx == 0
-        font = get_vietnamese_font(font_size, bold=is_title)
-        bbox = draw.textbbox((0, 0), line, font=font)
-        line_height = bbox[3] - bbox[1]
-        draw.text(
-            (x1 + padding, cursor_y),
-            line,
-            font=font,
-            fill=(*_bgr_to_rgb(text_color), 255),
+    if text_drawer is not None:
+        return text_drawer.transparent_panel(
+            x,
+            y,
+            lines,
+            alpha=alpha,
+            font_size=font_size,
+            text_color=text_color,
+            panel_color=panel_color,
+            padding=padding,
+            line_gap=line_gap,
+            anchor=anchor,
         )
-        cursor_y += line_height + line_gap
 
-    _pil_to_frame(pil_image, frame)
-    return panel_width, panel_height
+    with VietnameseTextDrawer(frame) as drawer:
+        return drawer.transparent_panel(
+            x,
+            y,
+            lines,
+            alpha=alpha,
+            font_size=font_size,
+            text_color=text_color,
+            panel_color=panel_color,
+            padding=padding,
+            line_gap=line_gap,
+            anchor=anchor,
+        )
 
 
 def draw_label_with_background(
@@ -170,6 +353,7 @@ def draw_label_with_background(
     text_color=(255, 255, 255),
     bg_color=(0, 0, 255),
     padding=8,
+    text_drawer=None,
 ):
     if not text:
         return
@@ -196,6 +380,7 @@ def draw_label_with_background(
         panel_color=bg_color,
         padding=padding,
         line_gap=0,
+        text_drawer=text_drawer,
     )
 
 
@@ -232,41 +417,24 @@ def draw_scene_guides(frame, config, analyzer):
 
 
 def get_feet_point(box, keypoints):
-    if keypoints is not None and len(keypoints) > 16:
-        conf_l_ankle = keypoints[15][2] if len(keypoints[15]) > 2 else 0
-        conf_r_ankle = keypoints[16][2] if len(keypoints[16]) > 2 else 0
-
-        if conf_l_ankle > 0.5 and conf_r_ankle > 0.5:
-            return (
-                int((keypoints[15][0] + keypoints[16][0]) / 2),
-                int((keypoints[15][1] + keypoints[16][1]) / 2),
-            )
-        if conf_l_ankle > 0.5:
-            return (int(keypoints[15][0]), int(keypoints[15][1]))
-        if conf_r_ankle > 0.5:
-            return (int(keypoints[16][0]), int(keypoints[16][1]))
-
-    return (int((box[0] + box[2]) / 2), int(box[3]))
+    features = extract_pose_features(keypoints, box)
+    return features.get("feet_point")
 
 
 def get_motion_point(box, keypoints):
-    if (
-        keypoints is not None
-        and len(keypoints) > 12
-        and len(keypoints[11]) > 2
-        and len(keypoints[12]) > 2
-        and keypoints[11][2] > 0.5
-        and keypoints[12][2] > 0.5
-    ):
-        return (
-            int((keypoints[11][0] + keypoints[12][0]) / 2),
-            int((keypoints[11][1] + keypoints[12][1]) / 2),
-        )
-
-    return (int((box[0] + box[2]) / 2), int((box[1] + box[3]) / 2))
+    features = extract_pose_features(keypoints, box)
+    return features.get("motion_point")
 
 
-def draw_person_overlay(frame, box, keypoints, lane_point, motion_point, analysis):
+def draw_person_overlay(
+    frame,
+    box,
+    keypoints,
+    lane_point,
+    motion_point,
+    analysis,
+    text_drawer=None,
+):
     display_status = analysis.get("display_status", analysis.get("status", ""))
     if DEMO_MODE and SHOW_ONLY_VIOLATIONS:
         if not display_status:
@@ -289,6 +457,7 @@ def draw_person_overlay(frame, box, keypoints, lane_point, motion_point, analysi
             text_color=(255, 255, 255),
             bg_color=VIOLATION_COLOR,
             padding=8,
+            text_drawer=text_drawer,
         )
         return
 
@@ -306,6 +475,7 @@ def draw_person_overlay(frame, box, keypoints, lane_point, motion_point, analysi
             text_color=(255, 255, 255),
             bg_color=analysis["color"],
             padding=8,
+            text_drawer=text_drawer,
         )
 
     if keypoints is not None and DRAW_KEYPOINTS:
@@ -346,7 +516,10 @@ def draw_person_overlay(frame, box, keypoints, lane_point, motion_point, analysi
     if DRAW_KEYPOINTS and analysis.get("best_wrist_point") is not None:
         cv2.circle(frame, analysis["best_wrist_point"], 8, (0, 255, 255), -1)
 
-    if DRAW_DEBUG_DETAIL and analysis.get("carry_type", "NONE") != "NONE":
+    if ENABLE_DEBUG_OVERLAY and ENABLE_VERBOSE_PERSON_DEBUG and analysis.get(
+        "carry_type",
+        "NONE",
+    ) != "NONE":
         cv2.putText(
             frame,
             f"CARRY:{analysis['carry_type']}",
@@ -357,7 +530,7 @@ def draw_person_overlay(frame, box, keypoints, lane_point, motion_point, analysi
             2,
         )
 
-    if DRAW_DEBUG_DETAIL:
+    if ENABLE_DEBUG_OVERLAY and ENABLE_VERBOSE_PERSON_DEBUG:
         for idx, debug_text in enumerate(build_debug_lines(analysis)):
             cv2.putText(
                 frame,
@@ -370,7 +543,10 @@ def draw_person_overlay(frame, box, keypoints, lane_point, motion_point, analysi
             )
 
 
-def draw_people_count(frame, current_inside_count):
+def draw_people_count(frame, current_inside_count, text_drawer=None):
+    if not ENABLE_SUMMARY_PANEL:
+        return
+
     draw_transparent_panel_with_vietnamese_text(
         frame,
         20,
@@ -382,6 +558,7 @@ def draw_people_count(frame, current_inside_count):
         alpha=0.45,
         font_size=24,
         panel_color=(44, 56, 82),
+        text_drawer=text_drawer,
     )
 
 
@@ -401,7 +578,12 @@ def draw_violation_summary(
     current_violation_counts,
     total_violation_people_count,
     total_violation_counts,
+    text_drawer=None,
 ):
+    _ = current_violation_people_count
+    if not ENABLE_SUMMARY_PANEL:
+        return
+
     font_size = 26 if frame.shape[1] >= 1400 else 22
     margin = 20
 
@@ -427,6 +609,7 @@ def draw_violation_summary(
         alpha=0.45,
         font_size=font_size,
         panel_color=(48, 64, 96),
+        text_drawer=text_drawer,
     )
     draw_transparent_panel_with_vietnamese_text(
         frame,
@@ -437,10 +620,12 @@ def draw_violation_summary(
         font_size=font_size,
         panel_color=(34, 82, 70),
         anchor="right",
+        text_drawer=text_drawer,
     )
 
 
 def build_debug_lines(analysis):
+    analysis = analysis.get("debug_info") or analysis
     return [
         f"BEST_WRIST:{analysis.get('best_wrist', 'NONE')}",
         f"BEST_WRIST_CORRECT:{analysis.get('best_wrist_correct', 'NONE')}",
@@ -507,6 +692,20 @@ def build_debug_lines(analysis):
         f"HOLD_NOT_HOLD_EVIDENCE_HITS:{analysis.get('hold_not_hold_evidence_hits', 0)}",
         f"NOT_HOLD_BY_EVIDENCE:{analysis.get('not_hold_by_evidence', False)}",
         f"HOLD_CONF:{analysis.get('hold_confirmed_status', 'UNKNOWN')}",
+        f"L_CLAIM:{analysis.get('left_hand_claim', 'NONE')}",
+        f"R_CLAIM:{analysis.get('right_hand_claim', 'NONE')}",
+        f"L_HOLD_CLAIM_HITS:{analysis.get('left_hold_claim_hits', 0)}",
+        f"R_HOLD_CLAIM_HITS:{analysis.get('right_hold_claim_hits', 0)}",
+        f"L_CARRY_CLAIM_HITS:{analysis.get('left_carry_claim_hits', 0)}",
+        f"R_CARRY_CLAIM_HITS:{analysis.get('right_carry_claim_hits', 0)}",
+        f"L_HOLD_RAW_B:{analysis.get('left_hold_raw_before_claim', False)}",
+        f"R_HOLD_RAW_B:{analysis.get('right_hold_raw_before_claim', False)}",
+        f"L_HOLD_RAW_A:{analysis.get('left_hold_raw_after_claim', False)}",
+        f"R_HOLD_RAW_A:{analysis.get('right_hold_raw_after_claim', False)}",
+        f"L_CARRY_RAW_B:{analysis.get('left_carry_raw_before_claim', False)}",
+        f"R_CARRY_RAW_B:{analysis.get('right_carry_raw_before_claim', False)}",
+        f"L_CARRY_RAW_A:{analysis.get('left_carry_raw_after_claim', False)}",
+        f"R_CARRY_RAW_A:{analysis.get('right_carry_raw_after_claim', False)}",
         f"L_CARRY:{analysis.get('left_carry', False)}",
         f"R_CARRY:{analysis.get('right_carry', False)}",
         f"CARRY:{analysis.get('is_carrying', False)}",
@@ -520,6 +719,27 @@ def build_debug_lines(analysis):
         else "R_ANG:NA",
         f"L_TORSO:{analysis.get('left_wrist_in_torso', False)}",
         f"R_TORSO:{analysis.get('right_wrist_in_torso', False)}",
+        f"BODY_SCALE:{analysis['body_scale']:.1f}"
+        if analysis.get("body_scale") is not None
+        else "BODY_SCALE:NA",
+        f"SHOULDER_W:{analysis['shoulder_width']:.1f}"
+        if analysis.get("shoulder_width") is not None
+        else "SHOULDER_W:NA",
+        f"TORSO_H:{analysis['torso_height']:.1f}"
+        if analysis.get("torso_height") is not None
+        else "TORSO_H:NA",
+        f"WRIST_DX:{int(analysis['wrist_dx'])}"
+        if analysis.get("wrist_dx") is not None
+        else "WRIST_DX:NA",
+        f"WRIST_DX_TH:{int(analysis['wrist_dx_threshold'])}"
+        if analysis.get("wrist_dx_threshold") is not None
+        else "WRIST_DX_TH:NA",
+        f"WRIST_DY:{int(analysis['wrist_dy'])}"
+        if analysis.get("wrist_dy") is not None
+        else "WRIST_DY:NA",
+        f"WRIST_DY_TH:{int(analysis['wrist_dy_threshold'])}"
+        if analysis.get("wrist_dy_threshold") is not None
+        else "WRIST_DY_TH:NA",
         f"W_DX:{int(analysis['wrist_dx'])}"
         if analysis.get("wrist_dx") is not None
         else "W_DX:NA",

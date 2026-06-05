@@ -12,11 +12,32 @@ def _keypoint_is_visible(keypoints, idx, conf_th):
     )
 
 
+def _get_keypoint_point(keypoints, idx, conf_th=0.5):
+    if not _keypoint_is_visible(keypoints, idx, conf_th):
+        return None
+    return (int(keypoints[idx][0]), int(keypoints[idx][1]))
+
+
+def _midpoint(point_a, point_b):
+    if point_a is None or point_b is None:
+        return None
+    return (
+        int((point_a[0] + point_b[0]) / 2),
+        int((point_a[1] + point_b[1]) / 2),
+    )
+
+
 def calculate_angle(a, b, c):
     a, b, c = np.array(a), np.array(b), np.array(c)
     ba, bc = a - b, c - b
     cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-6)
     return np.degrees(np.arccos(np.clip(cosine_angle, -1.0, 1.0)))
+
+
+def _calculate_arm_angle_from_points(shoulder, elbow, wrist):
+    if shoulder is None or elbow is None or wrist is None:
+        return None
+    return calculate_angle(shoulder, elbow, wrist)
 
 
 def signed_distance_to_line(pt, line_pts):
@@ -98,7 +119,6 @@ def estimate_body_facing(keypoints, conf_th=0.5):
     right_shoulder_x = keypoints[6][0]
     shoulder_dx = left_shoulder_x - right_shoulder_x
 
-    # Small x gaps are too unstable to treat as front/back.
     if abs(shoulder_dx) <= 10:
         shoulder_guess = "SIDE_OR_UNKNOWN"
     elif shoulder_dx > 0:
@@ -143,3 +163,107 @@ def estimate_arm_side_order(keypoints, conf_th=0.5):
     if left_avg_x < right_avg_x:
         return "LEFT_ARM_ON_IMAGE_LEFT"
     return "UNKNOWN"
+
+
+def _get_torso_box_from_features(features, margin_x=40, margin_y=40, margin_bottom=90):
+    torso_points = [
+        features.get("left_shoulder"),
+        features.get("right_shoulder"),
+        features.get("left_hip"),
+        features.get("right_hip"),
+    ]
+    if any(point is None for point in torso_points):
+        return None
+
+    shoulders = torso_points[:2]
+    hips = torso_points[2:]
+    xs = [point[0] for point in torso_points]
+    return (
+        int(min(xs) - margin_x),
+        int(min(point[1] for point in shoulders) - margin_y),
+        int(max(xs) + margin_x),
+        int(max(point[1] for point in hips) + margin_y + margin_bottom),
+    )
+
+
+def extract_pose_features(keypoints, bbox):
+    bbox_tuple = tuple(int(value) for value in bbox) if bbox is not None else None
+
+    left_wrist = _get_keypoint_point(keypoints, 9)
+    right_wrist = _get_keypoint_point(keypoints, 10)
+    left_elbow = _get_keypoint_point(keypoints, 7)
+    right_elbow = _get_keypoint_point(keypoints, 8)
+    left_shoulder = _get_keypoint_point(keypoints, 5)
+    right_shoulder = _get_keypoint_point(keypoints, 6)
+    left_hip = _get_keypoint_point(keypoints, 11)
+    right_hip = _get_keypoint_point(keypoints, 12)
+    left_ankle = _get_keypoint_point(keypoints, 15)
+    right_ankle = _get_keypoint_point(keypoints, 16)
+
+    bbox_center = None
+    bbox_bottom_center = None
+    if bbox_tuple is not None and len(bbox_tuple) >= 4:
+        bbox_center = (
+            int((bbox_tuple[0] + bbox_tuple[2]) / 2),
+            int((bbox_tuple[1] + bbox_tuple[3]) / 2),
+        )
+        bbox_bottom_center = (
+            int((bbox_tuple[0] + bbox_tuple[2]) / 2),
+            int(bbox_tuple[3]),
+        )
+
+    hip_center = _midpoint(left_hip, right_hip)
+    shoulder_center = _midpoint(left_shoulder, right_shoulder)
+
+    if left_ankle is not None and right_ankle is not None:
+        feet_point = _midpoint(left_ankle, right_ankle)
+    else:
+        feet_point = left_ankle or right_ankle or bbox_bottom_center
+
+    motion_point = hip_center or bbox_center or bbox_bottom_center
+
+    features = {
+        "bbox": bbox_tuple,
+        "bbox_center": bbox_center,
+        "bbox_bottom_center": bbox_bottom_center,
+        "left_wrist": left_wrist,
+        "right_wrist": right_wrist,
+        "left_elbow": left_elbow,
+        "right_elbow": right_elbow,
+        "left_shoulder": left_shoulder,
+        "right_shoulder": right_shoulder,
+        "left_hip": left_hip,
+        "right_hip": right_hip,
+        "left_ankle": left_ankle,
+        "right_ankle": right_ankle,
+        "hip_center": hip_center,
+        "shoulder_center": shoulder_center,
+        "motion_point": motion_point,
+        "feet_point": feet_point,
+        "left_arm_angle": _calculate_arm_angle_from_points(
+            left_shoulder,
+            left_elbow,
+            left_wrist,
+        ),
+        "right_arm_angle": _calculate_arm_angle_from_points(
+            right_shoulder,
+            right_elbow,
+            right_wrist,
+        ),
+        "body_facing": estimate_body_facing(keypoints),
+        "arm_side_order": estimate_arm_side_order(keypoints),
+        "keypoint_valid": {
+            "left_wrist": left_wrist is not None,
+            "right_wrist": right_wrist is not None,
+            "left_elbow": left_elbow is not None,
+            "right_elbow": right_elbow is not None,
+            "left_shoulder": left_shoulder is not None,
+            "right_shoulder": right_shoulder is not None,
+            "left_hip": left_hip is not None,
+            "right_hip": right_hip is not None,
+            "left_ankle": left_ankle is not None,
+            "right_ankle": right_ankle is not None,
+        },
+    }
+    features["torso_box"] = _get_torso_box_from_features(features)
+    return features

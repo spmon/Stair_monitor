@@ -28,6 +28,8 @@ class BehaviorHistoryMixin:
             self.backward_history[track_id] = []
         self.standing_history[track_id] = []
         self.standing_motion_history[track_id] = []
+        if hasattr(self, "hand_claim_state") and track_id in self.hand_claim_state:
+            del self.hand_claim_state[track_id]
         if hasattr(self, "violation_history") and track_id in self.violation_history:
             self.violation_history[track_id] = []
 
