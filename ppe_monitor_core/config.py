@@ -1,5 +1,5 @@
-VIDEO_INPUT_PATH = "video/raw_video/record_2026-05-30_15-43-25.avi"
-VIDEO_OUTPUT_PATH = "video/ppe_demo/ppe_output_video1.mp4"
+VIDEO_INPUT_PATH = "video/raw_video/record_2026-06-06_11-10-30.avi"
+VIDEO_OUTPUT_PATH = "video/ppe_demo/ppe_output_video4.mp4"
 
 POSE_MODEL_PATH = "yolo11x-pose.pt"
 PPE_MODEL_PATH = "runs/detect/ppe-2class-6/weights/best.pt"

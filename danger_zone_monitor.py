@@ -6,8 +6,8 @@ import numpy as np
 from shapely.geometry import Point, Polygon
 from ultralytics import YOLO
 
-VIDEO_INPUT_PATH = "video/raw_video/record_2026-06-05_14-50-03.avi"
-VIDEO_OUTPUT_PATH = "video/roi_warning_output2.mp4"
+VIDEO_INPUT_PATH = "video/raw_video/record_2026-06-06_09-53-43.avi"
+VIDEO_OUTPUT_PATH = "video/roi_warning_output3.mp4"
 
 POSE_MODEL_PATH = "yolo11x-pose.pt"
 
@@ -103,6 +103,21 @@ def draw_alert_text(draw_frame):
     )
 
 
+# Ve so nguoi dang nam trong ROI ma khong thay doi tieu chi phat hien hien tai.
+def draw_people_count(draw_frame, people_in_roi_count):
+    text = f"People in zone: {people_in_roi_count}"
+    text_color = (0, 0, 255) if people_in_roi_count > 0 else (0, 255, 0)
+    cv2.putText(
+        draw_frame,
+        text,
+        (40, 130),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        text_color,
+        3,
+    )
+
+
 # Chay toan bo luong danger zone monitor va tao hieu ung nhay do khi canh bao.
 def run_danger_zone_monitor():
     print("Dang load model...")
@@ -163,6 +178,7 @@ def run_danger_zone_monitor():
         )[0]
 
         danger_alert = False
+        people_in_roi_count = 0
 
         if pose_results.keypoints is not None and pose_results.boxes is not None:
             bboxes_array = pose_results.boxes.xyxy.cpu().numpy()
@@ -176,6 +192,7 @@ def run_danger_zone_monitor():
 
                 if inside_roi:
                     danger_alert = True
+                    people_in_roi_count += 1
 
                 if DEBUG_MODE:
                     draw_person_debug(draw_frame, person_box, keypoints, inside_roi)
@@ -193,6 +210,7 @@ def run_danger_zone_monitor():
             draw_roi(draw_frame, roi_color)
             draw_alert_text(draw_frame)
 
+        draw_people_count(draw_frame, people_in_roi_count)
         out.write(draw_frame)
 
     cap.release()

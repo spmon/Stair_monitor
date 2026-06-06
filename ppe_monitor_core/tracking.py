@@ -1,6 +1,7 @@
 from collections import deque
 
 from ppe_monitor_core.config import (
+    DEBUG_MODE,
     HELMET_SAFE_RATIO_THRES,
     HELMET_VIOLATION_RATIO_THRES,
     MIN_HISTORY_TO_DECIDE,
@@ -99,33 +100,42 @@ def build_person_status(track_id, track):
         or stable_has_vest is None
     ):
         label = "CHECKING PPE..."
-        status_color = (0, 255, 255)
+        status_type = "checking"
+        status_color = (0, 180, 255)
         severity = 1
     elif stable_has_hat and stable_has_vest:
         label = "SAFE: Full PPE"
+        status_type = "safe"
         status_color = (0, 255, 0)
         severity = 0
     elif not stable_has_hat and not stable_has_vest:
         label = "WARNING: No Hat + No Vest"
+        status_type = "warning"
         status_color = (0, 0, 255)
         severity = 4
     elif not stable_has_hat:
         label = "WARNING: No Hat"
+        status_type = "warning"
         status_color = (0, 0, 255)
         severity = 3
     else:
         label = "WARNING: No Vest"
+        status_type = "warning"
         status_color = (0, 0, 255)
         severity = 2
 
-    label_text = (
-        f"{label} ID:{track_id} H:{hat_ratio:.2f} V:{vest_ratio:.2f} N:{history_len}"
-    )
+    if DEBUG_MODE:
+        label_text = (
+            f"{label} | ID:{track_id} | H:{hat_ratio:.2f} V:{vest_ratio:.2f} N:{history_len}"
+        )
+    else:
+        label_text = label
 
     return {
         "track_id": track_id,
         "label": label,
         "label_text": label_text,
+        "status_type": status_type,
         "severity": severity,
         "status_color": status_color,
         "stable_has_hat": stable_has_hat,
