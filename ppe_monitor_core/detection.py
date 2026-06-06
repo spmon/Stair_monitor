@@ -61,6 +61,8 @@ def match_ppe_item(
     frame=None,
     reject_dark_hair=False,
 ):
+    # frame chi duoc dung de doc pixel crop phuc vu loc false positive.
+    # Khong duoc ve overlay len frame nay; pipeline phai truyen infer_frame sach vao day.
     if target_box is None:
         return False, None
 

@@ -25,6 +25,7 @@ from ppe_monitor_core.geometry import get_head_bbox, get_torso_bbox
 from ppe_monitor_core.rendering import (
     draw_count_panel,
     draw_person_debug,
+    draw_person_status,
     draw_raw_ppe,
 )
 from ppe_monitor_core.tracking import (
@@ -94,9 +95,12 @@ def run_ppe_monitor():
             break
 
         frame_idx += 1
+        # infer_frame: clean image for AI models only. Never draw on this image.
         infer_frame = frame.copy()
+        # draw_frame: visualization image. Draw boxes, text, panels here.
         draw_frame = frame.copy()
 
+        # All AI models must run on the clean inference frame only.
         pose_results = pose_model(
             infer_frame,
             imgsz=POSE_IMGSZ,
@@ -110,6 +114,7 @@ def run_ppe_monitor():
             verbose=False,
         )[0]
 
+        # From this point onward, every overlay/debug element must be drawn on draw_frame only.
         hat_bboxes, vest_bboxes = parse_ppe_boxes(ppe_results)
         if DEBUG_MODE and DEBUG_RAW_PPE:
             draw_raw_ppe(draw_frame, hat_bboxes, vest_bboxes)
@@ -160,6 +165,7 @@ def run_ppe_monitor():
                     hat_bboxes,
                     HEAD_OVERLAP_THRES,
                     used_hat_indices,
+                    # infer_frame is passed here for clean pixel inspection only, never for drawing.
                     frame=infer_frame,
                     reject_dark_hair=True,
                 )
@@ -192,6 +198,13 @@ def run_ppe_monitor():
                     no_vest_count += 1
 
                 person_status = build_person_status(track_id, track)
+                draw_person_status(
+                    draw_frame=draw_frame,
+                    person_box=person_box,
+                    label_text=person_status["label_text"],
+                    status_type=person_status["status_type"],
+                    status_color=person_status["status_color"],
+                )
 
                 if DEBUG_MODE:
                     draw_person_debug(
@@ -216,6 +229,7 @@ def run_ppe_monitor():
         )
 
         prune_expired_tracks(tracks, frame_idx)
+        # Output video must always store the visualization frame, never the clean inference frame.
         out.write(draw_frame)
 
     cap.release()
