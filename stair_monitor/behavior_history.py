@@ -15,6 +15,8 @@ from stair_monitor.settings import (
 
 
 class BehaviorHistoryMixin:
+    # Reset history theo tung track_id khi nguoi ra khoi vung hoac mat track.
+    # Moi track co bo history rieng de tranh lay ket qua frame cu cua nguoi nay gan sang nguoi khac.
     def _reset_behavior_histories(self, track_id):
         if track_id in self.lane_history:
             self.lane_history[track_id] = []
@@ -33,6 +35,8 @@ class BehaviorHistoryMixin:
         if hasattr(self, "violation_history") and track_id in self.violation_history:
             self.violation_history[track_id] = []
 
+    # hold_raw_status la ket qua cua tung frame.
+    # hold_final_status la ket qua sau khi da qua bo loc history de chong nhieu keypoint/YOLO.
     def _update_hold_status_history(self, track_id, hold_final_status_raw):
         if track_id not in self.hold_status_history:
             self.hold_status_history[track_id] = []
@@ -90,6 +94,7 @@ class BehaviorHistoryMixin:
             holding,
         )
 
+    # Doc lai trang thai sai lan da tich luy truoc do khi frame hien tai chua du dieu kien cap nhat.
     def _get_lane_history_state(self, track_id):
         history = self.lane_history.get(track_id, [])
         lane_wrong_hits = sum(1 for is_wrong in history if is_wrong)
@@ -99,6 +104,7 @@ class BehaviorHistoryMixin:
         )
         return lane_wrong_hits, wrong_lane_confirmed
 
+    # Lane history giup tranh bao sai chi vi 1 vai frame pose rung.
     def _update_lane_history(self, track_id, wrong_lane_raw):
         if track_id not in self.lane_history:
             self.lane_history[track_id] = []
@@ -108,6 +114,7 @@ class BehaviorHistoryMixin:
 
         return self._get_lane_history_state(track_id)
 
+    # Di lui chi duoc xac nhan khi direction va body facing on dinh trong nhieu frame lien tiep.
     def _update_backward_history(self, track_id, backward_raw):
         if track_id not in self.backward_history:
             self.backward_history[track_id] = []
@@ -135,6 +142,8 @@ class BehaviorHistoryMixin:
         - motion_range
         - standing_len
         """
+        # Dung lich su p_motion de kiem tra do dao dong tong the cua nguoi trong vung cau thang.
+        # Logic dung yen doc lap voi direction: nguoi chua co UP/DOWN van co the bi xet dung yen.
         if track_id not in self.standing_motion_history:
             self.standing_motion_history[track_id] = []
 
@@ -154,6 +163,7 @@ class BehaviorHistoryMixin:
             dy = max(ys) - min(ys)
             motion_range = float(np.hypot(dx, dy))
 
+        # standing_raw la ket qua frame-level, con standing_still_confirmed o duoi la ket qua sau history.
         standing_raw = (
             len(points) >= STANDING_STILL_HISTORY_LEN
             and motion_range is not None

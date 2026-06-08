@@ -17,18 +17,22 @@ from stair_monitor.settings import (
 )
 
 
+# Tai su dung pose feature da tinh san de tranh tinh lap lai trong cung 1 frame.
 def _get_features(features, keypoints):
     if features is not None:
         return features
     return extract_pose_features(keypoints, None)
 
 
+# Khoang cach co ban dung cho shoulder/torso/wrist.
 def _point_distance(point_a, point_b):
     if point_a is None or point_b is None:
         return None
     return math.hypot(point_a[0] - point_b[0], point_a[1] - point_b[1])
 
 
+# Tinh kich thuoc co the dong theo tung nguoi.
+# Carry uu tien threshold theo ti le co the, khong dua vao pixel cung.
 def _compute_body_scale(pose_features):
     shoulder_width = _point_distance(
         pose_features.get("left_shoulder"),
@@ -60,6 +64,7 @@ def _compute_body_scale(pose_features):
     }
 
 
+# Chieu ngang cho carry uu tien shoulder_width de phu hop voi be rong than tren.
 def _horizontal_carry_scale(scale_info):
     shoulder_width = scale_info.get("shoulder_width")
     if shoulder_width is not None and shoulder_width > 0:
@@ -67,6 +72,7 @@ def _horizontal_carry_scale(scale_info):
     return max(1.0, scale_info["body_scale"] * 0.4)
 
 
+# Chieu doc cho carry uu tien torso_height de phu hop voi vung truoc nguc/bung.
 def _vertical_carry_scale(scale_info):
     torso_height = scale_info.get("torso_height")
     if torso_height is not None and torso_height > 0:
@@ -74,6 +80,7 @@ def _vertical_carry_scale(scale_info):
     return max(1.0, scale_info["body_scale"])
 
 
+# Kiem tra tay co gap goc giong tu the om/mang vat hay khong.
 def is_arm_bent_for_carrying(
     keypoints,
     shoulder_idx,
@@ -94,6 +101,8 @@ def is_arm_bent_for_carrying(
     return angle is not None and angle < angle_threshold, angle
 
 
+# Tao torso box dong de kiem tra co tay co nam trong vung truoc nguoi hay khong.
+# Cac margin ratio/pixel o day chi phuc vu logic Mang Vac, khong duoc dung sang logic vin tay.
 def get_torso_box(keypoints, margin_x=40, margin_y=40, margin_bottom=90, features=None):
     """
     Approximate torso box from shoulders and hips.
@@ -126,6 +135,7 @@ def get_torso_box(keypoints, margin_x=40, margin_y=40, margin_bottom=90, feature
     scale_info = _compute_body_scale(pose_features)
     horizontal_scale = _horizontal_carry_scale(scale_info)
     vertical_scale = _vertical_carry_scale(scale_info)
+    # MIN_*_PX la nguong san de nguoi o xa van khong tao threshold qua nho.
     dynamic_margin_x = max(
         float(MIN_WRIST_TO_TORSO_X_PX),
         horizontal_scale * WRIST_TO_TORSO_X_RATIO,
@@ -148,6 +158,7 @@ def get_torso_box(keypoints, margin_x=40, margin_y=40, margin_bottom=90, feature
     )
 
 
+# Kiem tra co tay co nam trong vung torso hay khong de suy luan dang om vat truoc nguoi.
 def is_wrist_in_torso_area(keypoints, wrist_idx, torso_box=None, features=None):
     """
     Check whether wrist lies inside torso/chest/belly area.
@@ -168,6 +179,7 @@ def is_wrist_in_torso_area(keypoints, wrist_idx, torso_box=None, features=None):
     return x1 <= x <= x2 and y1 <= y <= y2
 
 
+# So sanh hai co tay de xem chung co du gan nhau nhu tu the om vat khong.
 def calc_wrist_distance(keypoints, features=None):
     """
     Calculate wrist offsets and Euclidean distance between left and right wrists.
@@ -184,6 +196,8 @@ def calc_wrist_distance(keypoints, features=None):
     return wrist_dx, wrist_dy, wrist_distance
 
 
+# Suy luan carry tu pose tay/co tay/khuuyu tay.
+# Cac threshold ratio trong ham nay chi danh cho Mang Vac, khong duoc dung lai cho handrail/hold.
 def detect_carrying_pose(keypoints, holding=False, best_wrist="NONE", features=None):
     """
     Detect carrying from pose.
@@ -226,6 +240,7 @@ def detect_carrying_pose(keypoints, holding=False, best_wrist="NONE", features=N
         keypoints,
         features=pose_features,
     )
+    # wrist_together dung de kiem tra hai co tay co du gan nhau theo chieu ngang/doc hay khong.
     wrist_dx_threshold = max(
         float(MIN_WRIST_TOGETHER_X_PX),
         horizontal_scale * WRIST_TOGETHER_X_RATIO,
@@ -245,6 +260,7 @@ def detect_carrying_pose(keypoints, holding=False, best_wrist="NONE", features=N
     any_wrist_in_torso = left_wrist_in_torso or right_wrist_in_torso
     both_wrist_in_torso = left_wrist_in_torso and right_wrist_in_torso
 
+    # One-arm strong case cho phep bat duoc tu the om vat bang 1 tay ro rang.
     strong_left_front = (
         left_bent
         and left_wrist_in_torso

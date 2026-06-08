@@ -3,6 +3,7 @@ import math
 import numpy as np
 
 
+# Kiem tra keypoint co du tin cay de dung cho cac logic suy luan hay khong.
 def _keypoint_is_visible(keypoints, idx, conf_th):
     return (
         keypoints is not None
@@ -12,12 +13,14 @@ def _keypoint_is_visible(keypoints, idx, conf_th):
     )
 
 
+# Lay toa do pixel cua keypoint neu do tin cay vuot nguong.
 def _get_keypoint_point(keypoints, idx, conf_th=0.5):
     if not _keypoint_is_visible(keypoints, idx, conf_th):
         return None
     return (int(keypoints[idx][0]), int(keypoints[idx][1]))
 
 
+# Midpoint duoc dung de tao cac diem dai dien on dinh hon so voi dung 1 keypoint le.
 def _midpoint(point_a, point_b):
     if point_a is None or point_b is None:
         return None
@@ -27,6 +30,7 @@ def _midpoint(point_a, point_b):
     )
 
 
+# Tinh goc tai diem b de suy luan tu the tay trong logic carry.
 def calculate_angle(a, b, c):
     a, b, c = np.array(a), np.array(b), np.array(c)
     ba, bc = a - b, c - b
@@ -40,6 +44,8 @@ def _calculate_arm_angle_from_points(shoulder, elbow, wrist):
     return calculate_angle(shoulder, elbow, wrist)
 
 
+# signed distance dung de biet co tay dang nam dung phia nao cua line lan can.
+# Dau am/duong phu thuoc thu tu 2 diem line trong file config, vi vay khong duoc dao tuy tien.
 def signed_distance_to_line(pt, line_pts):
     """
     Compute the signed distance from a point to a 2-point line.
@@ -63,6 +69,8 @@ def signed_distance_to_line(pt, line_pts):
     return (A * x0 + B * y0 + C) / hyp
 
 
+# Khoang cach toi doan thang dung de tranh bat nham phan keo dai vo han cua line.
+# Gia tri t cho biet hinh chieu roi vao trong doan [0, 1] hay nam ngoai doan.
 def point_to_segment_distance(p, a, b):
     """
     Compute the distance from point p to the line segment ab.
@@ -90,6 +98,7 @@ def point_to_segment_distance(p, a, b):
     return dist, t, closest
 
 
+# Quy doi dau signed distance thanh nhan de debug de doc hon.
 def get_side_name(d):
     if d == -999 or d == 9999:
         return "UNKNOWN"
@@ -100,6 +109,7 @@ def get_side_name(d):
     return "ON_LINE"
 
 
+# Uoc luong huong than/mat de phuc vu logic di lui, khong dung de tinh lane.
 def estimate_body_facing(keypoints, conf_th=0.5):
     """
     Estimate body facing direction from pose keypoints.
@@ -137,6 +147,7 @@ def estimate_body_facing(keypoints, conf_th=0.5):
     return shoulder_guess
 
 
+# Xac dinh tay trai dang nam ben trai hay ben phai anh de debug body orientation.
 def estimate_arm_side_order(keypoints, conf_th=0.5):
     """
     Estimate whether the left arm appears on the left or right side of the image.
@@ -165,6 +176,7 @@ def estimate_arm_side_order(keypoints, conf_th=0.5):
     return "UNKNOWN"
 
 
+# Tao torso box tu shoulder va hip de carry check vung truoc nguc/bung.
 def _get_torso_box_from_features(features, margin_x=40, margin_y=40, margin_bottom=90):
     torso_points = [
         features.get("left_shoulder"),
@@ -186,6 +198,10 @@ def _get_torso_box_from_features(features, margin_x=40, margin_y=40, margin_bott
     )
 
 
+# Gom cac pose feature co the tai su dung o nhieu logic.
+# p_lane uu tien midpoint hai mat ca chan; neu thieu thi fallback bbox bottom center.
+# p_motion uu tien tam hong vi on dinh hon chan khi buoc cau thang; neu thieu moi fallback bbox center.
+# Hai diem nay phuc vu 2 logic khac nhau: p_lane cho sai lan, p_motion cho direction/standing.
 def extract_pose_features(keypoints, bbox):
     bbox_tuple = tuple(int(value) for value in bbox) if bbox is not None else None
 
@@ -215,11 +231,14 @@ def extract_pose_features(keypoints, bbox):
     hip_center = _midpoint(left_hip, right_hip)
     shoulder_center = _midpoint(left_shoulder, right_shoulder)
 
+    # feet_point dai dien vi tri nguoi so voi vach giua de xet sai lan.
     if left_ankle is not None and right_ankle is not None:
         feet_point = _midpoint(left_ankle, right_ankle)
     else:
         feet_point = left_ankle or right_ankle or bbox_bottom_center
 
+    # motion_point dai dien cho chuyen dong tong the cua nguoi.
+    # Khong uu tien chan vi chan de nhieu khi pose rung hoac buoc buoc tren cau thang.
     motion_point = hip_center or bbox_center or bbox_bottom_center
 
     features = {

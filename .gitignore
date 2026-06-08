@@ -19,3 +19,6 @@ yolo11m-pose.pt
 main.py
 val2/
 video/
+*.engine
+jetson_orin_nano/models/*.engine
+*.jpg

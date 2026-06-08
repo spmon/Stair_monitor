@@ -33,6 +33,9 @@ HAND_CLAIM_CARRY_HITS = 4
 HAND_CLAIM_RESET_MISSES = 10
 
 
+# Lop trung tam ghep toan bo logic direction, lane, handrail, carry, backward, standing.
+# Dau vao chinh moi frame la track_id, p_lane, p_motion, keypoints va bbox.
+# Dau ra la 1 dict tong hop trang thai, canh bao va du lieu debug/overlay.
 class BehaviorAnalyzer(
     BehaviorHistoryMixin,
     CarryAnalysisMixin,
@@ -40,6 +43,7 @@ class BehaviorAnalyzer(
     ResultBuilderMixin,
 ):
     def __init__(self, config):
+        # Nap cac duong line/vung cau thang cho ban Windows/demo hien tai.
         self.center_line = config.get("CENTER_LINE", [[0, 0], [0, 0]])
 
         self.left_line = np.array(
@@ -77,6 +81,8 @@ class BehaviorAnalyzer(
         self.standing_history = {}
         self.standing_motion_history = {}
 
+    # Kiem tra p_lane co nam trong polygon cau thang hay khong.
+    # Sai lan/hold/standing chi nen duoc ket luan khi nguoi dang o trong vung nay.
     def is_inside_stairs(self, p_lane):
         if p_lane is None or len(self.stairs_poly) < 3:
             return False
@@ -88,6 +94,7 @@ class BehaviorAnalyzer(
         ) >= 0
 
     @staticmethod
+    # Trang thai claim duoc luu rieng cho tung tay cua tung track.
     def _new_hand_claim_entry():
         return {
             "claim": None,
@@ -96,6 +103,7 @@ class BehaviorAnalyzer(
             "misses": 0,
         }
 
+    # Khoi tao state claim tay theo track_id neu chua co.
     def _get_hand_claim_state(self, track_id):
         if track_id not in self.hand_claim_state:
             self.hand_claim_state[track_id] = {
@@ -104,6 +112,8 @@ class BehaviorAnalyzer(
             }
         return self.hand_claim_state[track_id]
 
+    # Claim tay giup ngan 1 tay bi dung dong thoi cho 2 logic hold va carry.
+    # Uu tien ben nao on dinh truoc qua nhieu frame se claim tay do.
     def _update_hand_claim_state(
         self,
         track_id,
@@ -162,11 +172,14 @@ class BehaviorAnalyzer(
         return claim_state
 
     @staticmethod
+    # Ghi nhan thoi gian tung block de log perf, khong anh huong logic nhan dien.
     def _record_perf(perf, key, start_time):
         if perf is None or start_time is None:
             return
         perf[key] = perf.get(key, 0.0) + (time.perf_counter() - start_time) * 1000.0
 
+    # Giai doan ghep hold raw + carry raw + claim state trong cung 1 frame.
+    # Hold va carry van la 2 logic doc lap; lop claim chi dung de giam xung dot bang chung.
     def _resolve_hold_and_claim_state(
         self,
         track_id,
@@ -205,6 +218,7 @@ class BehaviorAnalyzer(
         return hold_state, carry_pose, hand_claim_state
 
     @staticmethod
+    # Dua hold_state ve tuple co thu tu on dinh de ghim vao ket qua cuoi cung.
     def _copy_hold_state_fields(hold_state):
         return (
             hold_state["holding_raw"],
@@ -236,10 +250,14 @@ class BehaviorAnalyzer(
         )
 
     def analyze(self, track_id, p_lane, p_motion, keypoints, box=None, features=None):
+        # Ham phan tich 1 nguoi trong 1 frame.
+        # p_motion dung cho direction/backward/standing.
+        # p_lane dung cho sai lan va kiem tra trong vung cau thang.
         perf = {} if ENABLE_PERF_LOG else None
         analyze_start = time.perf_counter() if perf is not None else None
 
         features = features or extract_pose_features(keypoints, box)
+        # Neu caller chua truyen san, lay diem dai dien tu pose feature da extract.
         if p_lane is None:
             p_lane = features.get("feet_point")
         if p_motion is None:
@@ -318,11 +336,15 @@ class BehaviorAnalyzer(
         carry_info = None
         warnings = []
 
+        # Lich su p_motion theo truc y dung de suy ra direction.
+        # p_motion uu tien tam hong thay vi chan de tranh nhieu khi dang buoc tren cau thang.
         if track_id not in self.track_history:
             self.track_history[track_id] = []
         if p_motion is not None:
             self.track_history[track_id].append(p_motion[1])
 
+        # Standing still su dung lich su p_motion va doc lap voi direction.
+        # Nguoi chua du dieu kien ket luan UP/DOWN van co the bi bao Dung Yen.
         standing_start = time.perf_counter() if perf is not None else None
         inside_stairs = self.is_inside_stairs(p_lane)
         if inside_stairs:
@@ -335,6 +357,7 @@ class BehaviorAnalyzer(
             ) = self.update_standing_still(track_id, p_motion)
         self._record_perf(perf, "standing", standing_start)
 
+        # Dong bo 1 diem tra ket qua duy nhat de giu format ket qua nhat quan.
         def build_result(
             context,
             status,
@@ -354,8 +377,11 @@ class BehaviorAnalyzer(
                 **overrides,
             )
 
+        # Chua du lich su chuyen dong thi chua duoc ket luan direction.
+        # Giai doan nay van co the thu hold/standing de phuc vu debug/demo, nhung khong duoc ep thanh UP/DOWN.
         if len(self.track_history[track_id]) < DIRECTION_MIN_FRAMES:
             if not inside_stairs:
+                # Ra khoi vung thi reset history de track cu khong lam ban frame sau.
                 self._reset_behavior_histories(track_id)
                 hold_raw_status = "OUTSIDE"
                 hold_final_status = "OUTSIDE"
@@ -371,6 +397,7 @@ class BehaviorAnalyzer(
                     color=OUTSIDE_COLOR,
                 )
 
+            # Neu da tung co huong hop le truoc do thi tam thoi muon dung lai huong cu cho hold.
             hold_direction = self.last_valid_direction.get(track_id)
             hold_start = time.perf_counter() if perf is not None else None
             handrail_evidence = compute_handrail_evidence(
@@ -468,6 +495,9 @@ class BehaviorAnalyzer(
                 color=UNKNOWN_COLOR if DEMO_MODE else ANALYZING_COLOR,
             )
 
+        # Direction dua tren bien dong p_motion theo truc y trong nhieu frame.
+        # dy am/duong phu thuoc goc camera va DIRECTION_SIGN_NORMAL, vi vay khong duoc sua cong thuc nay.
+        # IDLE co nghia la chua du chuyen dong de ket luan UP/DOWN.
         direction_start = time.perf_counter() if perf is not None else None
         dy = self.track_history[track_id][-1] - self.track_history[track_id][0]
         self.track_history[track_id] = self.track_history[track_id][
@@ -489,6 +519,7 @@ class BehaviorAnalyzer(
         self._record_perf(perf, "direction", direction_start)
 
         if not inside_stairs:
+            # Ngoai vung thi khong ket luan sai lan/hold trong frame nay va xoa history hanh vi.
             self._reset_behavior_histories(track_id)
             standing_raw = False
             standing_hits = 0
@@ -536,6 +567,8 @@ class BehaviorAnalyzer(
         if direction in ("UP", "DOWN"):
             self.last_valid_direction[track_id] = direction
 
+        # Di lui can ca direction va body facing cung on dinh.
+        # DOWN + FRONT_TO_CAMERA va UP + BACK_TO_CAMERA duoc xem la di lui.
         backward_start = time.perf_counter() if perf is not None else None
         if direction == "DOWN" and is_front_to_camera(body_facing):
             backward_raw = True
@@ -547,6 +580,8 @@ class BehaviorAnalyzer(
         )
         self._record_perf(perf, "backward", backward_start)
 
+        # p_lane dung de xac dinh nguoi dang dung ben nao cua vach giua.
+        # Sai lan chi nen xet khi da co direction UP/DOWN; lane history giup chong nhieu pose.
         lane_start = time.perf_counter() if perf is not None else None
         if len(self.center_line) >= 2:
             a, b = self.center_line[0], self.center_line[1]
@@ -578,6 +613,8 @@ class BehaviorAnalyzer(
             # Neu track da tung co huong hop le, dung lai huong cu khi ho dung yen tam thoi.
             hold_direction = self.last_valid_direction.get(track_id)
 
+        # Hold/vin tay la logic doc lap.
+        # Khong duoc de logic carry ghi de vao ket qua hold; carry chi di qua lop claim tay.
         hold_start = time.perf_counter() if perf is not None else None
         handrail_evidence = compute_handrail_evidence(
             features,
@@ -647,6 +684,8 @@ class BehaviorAnalyzer(
             holding,
         ) = self._update_hold_status_history(track_id, hold_raw_status)
 
+        # IDLE nghia la chua du chuyen dong de ket luan UP/DOWN.
+        # Neu cung chua du bang chung dung yen thi tra ve IDLE trung tinh.
         if direction == "IDLE" and not standing_still_confirmed:
             return build_result(
                 locals(),
@@ -655,6 +694,7 @@ class BehaviorAnalyzer(
                 color=SAFE_COLOR if DEMO_MODE else (200, 200, 200),
             )
 
+        # Neu IDLE nhung dung yen da duoc xac nhan thi van tong hop canh bao tu standing/hold/lane/backward.
         if direction == "IDLE":
             warnings = self._collect_warnings(
                 wrong_lane,
@@ -677,6 +717,8 @@ class BehaviorAnalyzer(
                 color=color,
             )
 
+        # Carry duoc phan tich sau khi da co direction va hold state cho frame.
+        # Cac threshold carry chi phuc vu loi Mang Vac, khong duoc anh huong lane/hold.
         carry_start = time.perf_counter() if perf is not None else None
         carry_info = self._analyze_carry(
             track_id,
@@ -727,6 +769,7 @@ class BehaviorAnalyzer(
             self.standing_motion_history,
         ]
 
+        # Duyet tung kho history va xoa cac track khong con xuat hien trong frame hien tai.
         for history_map in history_maps:
             inactive_ids = [
                 track_id
