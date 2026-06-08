@@ -14,12 +14,13 @@ from stair_monitor.settings import (
     ENABLE_SUMMARY_PANEL,
     ENABLE_VERBOSE_PERSON_DEBUG,
     ENABLE_VIETNAMESE_TEXT,
-    SHOW_ONLY_VIOLATIONS,
     VIOLATION_COUNT_LABELS,
     VIOLATION_COLOR,
+    VIOLATION_DISPLAY_ORDER,
     VIOLATION_DISPLAY_NAMES,
 )
 
+# Font cache de tranh moi frame lai load font tieng Viet mot lan.
 FONT_CACHE = {}
 FONT_CANDIDATES = {
     False: [
@@ -35,7 +36,14 @@ FONT_CANDIDATES = {
     ],
 }
 
+DEMO_ALERT_PADDING_X = 28
+DEMO_ALERT_PADDING_Y = 18
+DEMO_ALERT_LINE_GAP = 10
+DEMO_ALERT_CORNER_RADIUS = 12
+DEMO_ALERT_BOTTOM_MARGIN = 30
 
+
+# Chon font co the ve tieng Viet co dau tren Windows/demo.
 def get_vietnamese_font(font_size=28, bold=False):
     cache_key = (font_size, bold)
     if cache_key in FONT_CACHE:
@@ -52,18 +60,22 @@ def get_vietnamese_font(font_size=28, bold=False):
     return font
 
 
+# Quy doi BGR cua OpenCV sang RGB de PIL ve dung mau.
 def _bgr_to_rgb(color):
     return (color[2], color[1], color[0])
 
 
+# Chuyen frame qua PIL de ve text tieng Viet co dau.
 def _frame_to_pil(frame):
     return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
 
+# Ghi noi dung PIL ve lai frame OpenCV.
 def _pil_to_frame(pil_image, frame):
     frame[:] = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
 
 
+# Do kich thuoc panel truoc khi ve de canh le va tranh text bi cat.
 def _measure_vietnamese_lines(lines, font_size=28, padding=14, line_gap=8):
     if not lines:
         return 0, 0
@@ -87,6 +99,8 @@ def _measure_vietnamese_lines(lines, font_size=28, padding=14, line_gap=8):
 
 
 class VietnameseTextDrawer:
+    # Helper nay chi phuc vu overlay/demo.
+    # Logic nhan dien khong duoc phu thuoc vao viec co ve text hay khong.
     def __init__(self, frame, enabled=True):
         self.frame = frame
         self.enabled = enabled and ENABLE_VIETNAMESE_TEXT
@@ -100,6 +114,7 @@ class VietnameseTextDrawer:
             self.operations = []
             return
 
+        # Dung PIL/ImageDraw de giu dau tieng Viet khi ve overlay.
         pil_image = _frame_to_pil(self.frame)
         draw = ImageDraw.Draw(pil_image, "RGBA")
 
@@ -169,6 +184,7 @@ class VietnameseTextDrawer:
         if not text:
             return
         if not self.enabled:
+            # Fallback cv2.putText khi khong can giu text co dau.
             cv2.putText(
                 self.frame,
                 text,
@@ -223,6 +239,7 @@ class VietnameseTextDrawer:
         y2 = y1 + panel_height
 
         if not self.enabled:
+            # Fallback nay nhanh hon, nhung se khong giu duoc tieng Viet co dau.
             overlay = self.frame.copy()
             cv2.rectangle(overlay, (x1, y1), (x2, y2), panel_color, -1)
             cv2.addWeighted(
@@ -265,6 +282,7 @@ class VietnameseTextDrawer:
         return panel_width, panel_height
 
 
+# Ham boc de ve 1 dong text tieng Viet tren frame.
 def draw_vietnamese_text(
     frame,
     text,
@@ -297,6 +315,7 @@ def draw_vietnamese_text(
         )
 
 
+# Ve panel nen trong suot + text tieng Viet.
 def draw_transparent_panel_with_vietnamese_text(
     frame,
     x,
@@ -343,6 +362,7 @@ def draw_transparent_panel_with_vietnamese_text(
         )
 
 
+# Ve nhan trang thai cho tung nguoi, tu dong canh lai de khong bi cat mep frame.
 def draw_label_with_background(
     frame,
     text,
@@ -384,6 +404,8 @@ def draw_label_with_background(
     )
 
 
+# Ve cac guide debug cua scene: vach giua, polygon cau thang, 2 line lan can.
+# Phan nay chi de quan sat/demo, khong duoc anh huong logic nhan dien.
 def draw_scene_guides(frame, config, analyzer):
     if "CENTER_LINE" in config:
         cv2.line(
@@ -416,16 +438,20 @@ def draw_scene_guides(frame, config, analyzer):
         )
 
 
+# Lay lai feet_point da chuan hoa tu pose feature.
 def get_feet_point(box, keypoints):
     features = extract_pose_features(keypoints, box)
     return features.get("feet_point")
 
 
+# Lay lai motion_point da chuan hoa tu pose feature.
 def get_motion_point(box, keypoints):
     features = extract_pose_features(keypoints, box)
     return features.get("motion_point")
 
 
+# Ve overlay cho tung nguoi sau khi analyzer da tra ket qua.
+# Ham nay chi hien thi demo, khong duoc can du vao logic nhan dien.
 def draw_person_overlay(
     frame,
     box,
@@ -435,33 +461,13 @@ def draw_person_overlay(
     analysis,
     text_drawer=None,
 ):
-    display_status = analysis.get("display_status", analysis.get("status", ""))
-    if DEMO_MODE and SHOW_ONLY_VIOLATIONS:
-        if not display_status:
-            return
-
-        x1, y1, x2, y2 = map(int, box)
-        cv2.rectangle(frame, (x1, y1), (x2, y2), VIOLATION_COLOR, 3)
-
-        label_y = y2 + 42
-        if label_y > frame.shape[0] - 5:
-            label_y = y1 - 8
-
-        draw_label_with_background(
-            frame,
-            display_status,
-            x1,
-            label_y,
-            font_scale=0.9,
-            thickness=3,
-            text_color=(255, 255, 255),
-            bg_color=VIOLATION_COLOR,
-            padding=8,
-            text_drawer=text_drawer,
-        )
+    clean_demo_mode = DEMO_MODE and not ENABLE_DEBUG_OVERLAY
+    if clean_demo_mode:
+        # Demo mode chi giu giao dien tong hop, khong ve bat ky overlay theo tung nguoi nao.
         return
 
     x1, y1, x2, y2 = map(int, box)
+    display_status = analysis.get("display_status", analysis.get("status", ""))
     cv2.rectangle(frame, (x1, y1), (x2, y2), analysis["color"], 2)
 
     if display_status:
@@ -478,10 +484,14 @@ def draw_person_overlay(
             text_drawer=text_drawer,
         )
 
+    # Ve 2 diem dai dien de tranh nham:
+    # - lane_point cho sai lan
+    # - motion_point cho direction/backward/standing
     if keypoints is not None and DRAW_KEYPOINTS:
         cv2.circle(frame, lane_point, 6, (0, 0, 255), -1)
         cv2.circle(frame, motion_point, 6, (255, 0, 0), -1)
 
+    # Skeleton nay chi de quan sat pose tay, khong lam thay doi ket qua phan tich.
     if keypoints is not None and DRAW_SKELETON:
         if (
             len(keypoints) > 9
@@ -516,6 +526,7 @@ def draw_person_overlay(
     if DRAW_KEYPOINTS and analysis.get("best_wrist_point") is not None:
         cv2.circle(frame, analysis["best_wrist_point"], 8, (0, 255, 255), -1)
 
+    # Debug overlay can flag bat/tat vi ve nhieu text se anh huong FPS demo.
     if ENABLE_DEBUG_OVERLAY and ENABLE_VERBOSE_PERSON_DEBUG and analysis.get(
         "carry_type",
         "NONE",
@@ -543,6 +554,7 @@ def draw_person_overlay(
             )
 
 
+# Ve panel tong so nguoi dang nam trong vung cau thang.
 def draw_people_count(frame, current_inside_count, text_drawer=None):
     if not ENABLE_SUMMARY_PANEL:
         return
@@ -562,6 +574,7 @@ def draw_people_count(frame, current_inside_count, text_drawer=None):
     )
 
 
+# Tao danh sach dong text cho panel thong ke.
 def _build_violation_count_lines(title, summary_lines, violation_counts):
     lines = [title, *summary_lines]
     for label in VIOLATION_COUNT_LABELS:
@@ -571,6 +584,99 @@ def _build_violation_count_lines(title, summary_lines, violation_counts):
     return lines
 
 
+def _build_active_violation_lines(current_violation_counts):
+    return [
+        VIOLATION_DISPLAY_NAMES[label]
+        for label in VIOLATION_DISPLAY_ORDER
+        if current_violation_counts.get(label, 0) > 0
+    ]
+
+
+def draw_demo_violation_panel(frame, current_violation_counts, text_drawer=None):
+    lines = _build_active_violation_lines(current_violation_counts)
+    if not lines:
+        return
+
+    frame_h, frame_w = frame.shape[:2]
+    font_size = 60 if frame_w >= 1600 else 51 if frame_w >= 1200 else 42
+    alpha = 0.9
+    badge_gap = DEMO_ALERT_LINE_GAP
+
+    # Ve rieng bang PIL/textbbox de canh dung ascent/descent cua font,
+    # tranh chu co dau bi sat day hoac bi cat trong badge DEMO MODE.
+    pil_image = _frame_to_pil(frame)
+    draw = ImageDraw.Draw(pil_image, "RGBA")
+    font = get_vietnamese_font(font_size, bold=True)
+
+    badge_layouts = []
+    total_height = 0
+    for line in lines:
+        line_bboxes = [draw.textbbox((0, 0), line, font=font)]
+        line_heights = [bbox[3] - bbox[1] for bbox in line_bboxes]
+        line_widths = [bbox[2] - bbox[0] for bbox in line_bboxes]
+        panel_width = max(line_widths, default=0) + DEMO_ALERT_PADDING_X * 2
+        panel_height = (
+            sum(line_heights)
+            + DEMO_ALERT_LINE_GAP * max(0, len(line_bboxes) - 1)
+            + DEMO_ALERT_PADDING_Y * 2
+        )
+        badge_layouts.append(
+            {
+                "lines": [line],
+                "line_bboxes": line_bboxes,
+                "line_heights": line_heights,
+                "panel_width": panel_width,
+                "panel_height": panel_height,
+            }
+        )
+        total_height += panel_height
+
+    total_height += badge_gap * max(0, len(badge_layouts) - 1)
+    start_y = int(frame_h * 0.80)
+    if start_y + total_height > frame_h:
+        start_y = frame_h - total_height - DEMO_ALERT_BOTTOM_MARGIN
+    start_y = max(20, start_y)
+
+    cursor_y = start_y
+    for badge in badge_layouts:
+        panel_width = badge["panel_width"]
+        panel_height = badge["panel_height"]
+        panel_x = frame_w // 2 - panel_width // 2
+        panel_x = max(0, min(panel_x, max(0, frame_w - panel_width)))
+        panel_y = cursor_y
+        if panel_y + panel_height > frame_h:
+            panel_y = max(0, frame_h - panel_height - DEMO_ALERT_BOTTOM_MARGIN)
+
+        draw.rounded_rectangle(
+            [(panel_x, panel_y), (panel_x + panel_width, panel_y + panel_height)],
+            radius=DEMO_ALERT_CORNER_RADIUS,
+            fill=(*_bgr_to_rgb(VIOLATION_COLOR), int(255 * alpha)),
+        )
+
+        current_y = panel_y + DEMO_ALERT_PADDING_Y
+        for line, bbox, line_height in zip(
+            badge["lines"],
+            badge["line_bboxes"],
+            badge["line_heights"],
+        ):
+            text_x = panel_x + DEMO_ALERT_PADDING_X - bbox[0]
+            text_y = current_y - bbox[1]
+            draw.text(
+                (text_x, text_y),
+                line,
+                font=font,
+                fill=(255, 255, 255, 255),
+            )
+            current_y += line_height + DEMO_ALERT_LINE_GAP
+
+        cursor_y = panel_y + panel_height + badge_gap
+
+    _pil_to_frame(pil_image, frame)
+
+
+# Ve thong ke hien tai va tong tu dau video.
+# current violation = loi dang xuat hien trong frame hien tai.
+# total violation = tong so track_id tung vi pham tu dau video den hien tai.
 def draw_violation_summary(
     frame,
     current_people_count,
@@ -578,6 +684,7 @@ def draw_violation_summary(
     current_violation_counts,
     total_violation_people_count,
     total_violation_counts,
+    demo_violation_counts=None,
     text_drawer=None,
 ):
     _ = current_violation_people_count
@@ -587,6 +694,7 @@ def draw_violation_summary(
     font_size = 26 if frame.shape[1] >= 1400 else 22
     margin = 20
 
+    # Ben trai la thong ke hien tai trong frame.
     current_lines = _build_violation_count_lines(
         "ĐANG VI PHẠM",
         [
@@ -595,9 +703,11 @@ def draw_violation_summary(
         ],
         current_violation_counts,
     )
+    # Ben phai la thong ke tong hop tu dau video.
+    # 1 track co the vi pham nhieu frame nhung trong tong hop chi tinh 1 lan moi loai loi.
     total_lines = _build_violation_count_lines(
         "TỔNG TỪ ĐẦU VIDEO",
-        [f"Tổng người từng vi phạm: {total_violation_people_count}"],
+        [f"Tổng lượt vi phạm: {total_violation_people_count}"],
         total_violation_counts,
     )
 
@@ -623,7 +733,15 @@ def draw_violation_summary(
         text_drawer=text_drawer,
     )
 
+    if DEMO_MODE and not ENABLE_DEBUG_OVERLAY:
+        draw_demo_violation_panel(
+            frame,
+            demo_violation_counts or current_violation_counts,
+            text_drawer=text_drawer,
+        )
 
+
+# Gom cac dong debug chi tiet de ve ben canh bbox khi can phan tich loi.
 def build_debug_lines(analysis):
     analysis = analysis.get("debug_info") or analysis
     return [

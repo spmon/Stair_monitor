@@ -1,12 +1,14 @@
 import json
 
 VIDEO_INPUT_PATH = "video/raw_video/record_2026-05-27_11-58-05.avi"
-VIDEO_OUTPUT_PATH = "video/stair_demo/demo1.mp4"
+VIDEO_OUTPUT_PATH = "video/stair_demo/demo15.mp4"
 CAMERA_CONFIG_PATH = "camera_config.json"
 DEMO_MODE = True
 SHOW_ONLY_VIOLATIONS = True
 ENABLE_PERF_LOG = True
 PERF_LOG_INTERVAL = 30
+# Flag tong de bat/tat thong tin debug phuc vu quan sat demo.
+# Khi tat flag nay, code nhan dien van chay nhu cu, chi bo bot du lieu/overlay debug.
 ENABLE_DEBUG_OVERLAY = False
 ENABLE_VERBOSE_PERSON_DEBUG = False
 ENABLE_SKELETON_DRAW = False
@@ -18,24 +20,26 @@ DRAW_DEBUG_DETAIL = ENABLE_VERBOSE_PERSON_DEBUG
 DRAW_SAFE_STATUS = False
 DRAW_SKELETON = ENABLE_SKELETON_DRAW
 DRAW_KEYPOINTS = ENABLE_DEBUG_OVERLAY
-SAVE_OUTPUT_VIDEO = True
+SAVE_OUTPUT_VIDEO = False
+DEMO_ALERT_HOLD_SECONDS = 1
 
 VIOLATION_DISPLAY_NAMES = {
     "Sai Lan": "Sai làn",
-    "Khong Vin": "Không vịn",
+    "Khong Vin": "Không vịn tay",
     "Vin Sai Ben": "Vịn sai bên",
     "Mang Vac": "Mang vác",
     "Di Lui": "Đi lùi",
     "Dung Yen": "Đứng yên",
 }
-VIOLATION_COUNT_LABELS = [
-    "Sai Lan",
+VIOLATION_DISPLAY_ORDER = [
     "Khong Vin",
     "Vin Sai Ben",
+    "Sai Lan",
     "Mang Vac",
     "Di Lui",
     "Dung Yen",
 ]
+VIOLATION_COUNT_LABELS = list(VIOLATION_DISPLAY_ORDER)
 
 SAFE_COLOR = (0, 255, 0)
 VIOLATION_COLOR = (0, 0, 255)
@@ -71,7 +75,7 @@ BACKWARD_HISTORY_LEN = 15
 BACKWARD_MIN_HITS = 9
 HOLD_HISTORY_LEN = 15
 HOLD_MIN_NOT_HOLD_HITS = 12
-HOLD_MIN_NOT_HOLD_EVIDENCE_HITS = 15
+HOLD_MIN_NOT_HOLD_EVIDENCE_HITS = 13
 HOLD_MIN_WRONG_SIDE_HITS = 10
 WRIST_TOGETHER_THRESHOLD = 260
 WRIST_TOGETHER_X_THRESHOLD = 180
@@ -88,6 +92,8 @@ STAIRS_LEFT_EXPAND_BOTTOM_PX = 60
 
 
 def load_camera_config(path=CAMERA_CONFIG_PATH):
+    # Doc cau hinh camera/ROI/lan can cho ban Windows/demo hien tai.
+    # Ham nay chi nap du lieu JSON, khong sua doi logic phan tich.
     try:
         with open(path, "r") as f:
             return json.load(f)

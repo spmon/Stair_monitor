@@ -8,6 +8,8 @@ from stair_monitor.settings import (
 
 
 class CarryAnalysisMixin:
+    # Lay carry raw cua frame hien tai truoc khi claim tay co hieu luc.
+    # Muc dich la giu rieng "bang chung carry" voi "bang chung hold" de debug cho ro.
     def _get_carry_pose(self, keypoints, holding_raw, best_wrist, features=None):
         carry_info = detect_carrying_pose(
             keypoints=keypoints,
@@ -38,6 +40,8 @@ class CarryAnalysisMixin:
         )
         return carry_info
 
+    # Neu mot tay da duoc claim cho HOLD thi chan tay do khoi logic carry.
+    # Khong duoc de carry ghi de len ket qua hold; hold va carry la 2 logic doc lap.
     def _apply_hand_claim_to_carry_pose(self, carry_info, hand_claim_state):
         if hand_claim_state is None:
             hand_claim_state = {}
@@ -99,6 +103,8 @@ class CarryAnalysisMixin:
         carry_info["right_carry_raw"] = right_carry_raw_after_claim
         return carry_info
 
+    # Carry history giup tranh bao Mang Vac chi vi 1 frame pose nhieu.
+    # Raw la ket qua tung frame, confirmed la ket qua sau khi du hit qua nhieu frame.
     def _analyze_carry(
         self,
         track_id,
@@ -125,6 +131,7 @@ class CarryAnalysisMixin:
         )
         front_carry_one_arm_raw = carry_info.get("front_carry_one_arm_raw", False)
 
+        # Lich su 2 tay va 1 tay duoc luu rieng de giu nguyen logic nguong hien tai.
         if track_id not in self.front_carry_history:
             self.front_carry_history[track_id] = []
         self.front_carry_history[track_id].append(front_carry_two_hand_raw)

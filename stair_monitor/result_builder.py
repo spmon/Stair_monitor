@@ -16,6 +16,7 @@ DISPLAY_TEXT_REPLACEMENTS = {
     "Ngoai Vung": "Ngoài vùng",
     "An Toan": "An toàn",
 }
+# Bang mapping nay giu result dict on dinh va tranh phai truyen tay tung field o analyzer.
 RESULT_CONTEXT_FIELDS = (
     ("track_id", "track_id"),
     ("dy", "dy"),
@@ -232,6 +233,7 @@ DEBUG_INFO_FIELDS = (
 
 class ResultBuilderMixin:
     @staticmethod
+    # Doi nhan noi bo sang chuoi hien thi de overlay doc de hon.
     def _translate_display_text(text):
         translated = text or ""
         for internal_label, display_label in DISPLAY_TEXT_REPLACEMENTS.items():
@@ -239,6 +241,8 @@ class ResultBuilderMixin:
         return translated
 
     @staticmethod
+    # display_status la chuoi gon de ve demo.
+    # status day du van duoc giu lai trong result de debug/log khi can.
     def _build_display_status(direction, warnings):
         if DEMO_MODE:
             return ResultBuilderMixin._translate_display_text(" - ".join(warnings))
@@ -251,6 +255,8 @@ class ResultBuilderMixin:
         return ""
 
     @staticmethod
+    # Gom cac loai loi thuc su tu tung module.
+    # Danh sach nay duoc dung ca cho overlay hien tai va thong ke tong hop.
     def _collect_warnings(
         wrong_lane,
         hold_final_status,
@@ -283,6 +289,7 @@ class ResultBuilderMixin:
         safe_color,
         safe_status,
     ):
+        # Tach "real violation" ra khoi UNKNOWN de panel demo va mau sac khong bi nham.
         real_warnings = [
             warning for warning in warnings if warning in REAL_VIOLATION_LABELS
         ]
@@ -319,6 +326,7 @@ class ResultBuilderMixin:
         perf=None,
         **overrides,
     ):
+        # Rut field can thiet tu locals()/context cua analyzer de dong goi ra 1 result dict duy nhat.
         result_kwargs = {
             result_key: context[context_key]
             for result_key, context_key in RESULT_CONTEXT_FIELDS
@@ -448,6 +456,7 @@ class ResultBuilderMixin:
         warnings=None,
         perf=None,
     ):
+        # not_hold_by_evidence cho biet "Khong Vin" da co du bang chung qua nhieu frame, khong phai 1 frame le.
         not_hold_by_evidence = (
             hold_status == "NONE"
             and hold_not_hold_evidence_hits >= HOLD_MIN_NOT_HOLD_EVIDENCE_HITS
@@ -559,6 +568,8 @@ class ResultBuilderMixin:
             "warnings": list(warnings) if warnings is not None else [],
             "perf": perf,
         }
+        # debug_info chi phuc vu overlay/log debug.
+        # Logic nhan dien khong duoc phu thuoc vao viec co bat debug overlay hay khong.
         result["debug_info"] = (
             {key: result.get(key) for key in DEBUG_INFO_FIELDS}
             if ENABLE_DEBUG_OVERLAY
