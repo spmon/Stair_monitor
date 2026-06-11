@@ -119,10 +119,11 @@ class BehaviorHistoryMixin:
         if track_id not in self.backward_history:
             self.backward_history[track_id] = []
 
-        self.backward_history[track_id].append(backward_raw)
-        self.backward_history[track_id] = self.backward_history[track_id][
-            -BACKWARD_HISTORY_LEN:
-        ]
+        if backward_raw is not None:
+            self.backward_history[track_id].append(backward_raw)
+            self.backward_history[track_id] = self.backward_history[track_id][
+                -BACKWARD_HISTORY_LEN:
+            ]
 
         backward_hits = sum(self.backward_history[track_id])
         backward_confirmed = (

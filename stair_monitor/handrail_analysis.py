@@ -79,7 +79,7 @@ def compute_handrail_evidence(features, left_line, right_line, config=None):
         if rule == LEFT_HANDRAIL_RULE:
             return bool(-LEFT_HANDRAIL_MAX_DISTANCE <= pair["dist"] <= -10)
         if rule == RIGHT_HANDRAIL_RULE:
-            return bool(-10 <= pair["dist"] <= RIGHT_HANDRAIL_MAX_DISTANCE)
+            return bool(10 <= pair["dist"] <= 40)
         return "UNKNOWN"
 
     # Ket qua o day chi la bang chung frame-level cho tung co tay/tung rail.
@@ -168,7 +168,7 @@ def get_best_wrist_for_handrail_by_rule(keypoints, line, rule, segment_max_dista
         if rule == LEFT_HANDRAIL_RULE:
             valid_d = -LEFT_HANDRAIL_MAX_DISTANCE <= d <= -10
         elif rule == RIGHT_HANDRAIL_RULE:
-            valid_d = -10 <= d <= RIGHT_HANDRAIL_MAX_DISTANCE
+            valid_d = 0 <= d <= RIGHT_HANDRAIL_MAX_DISTANCE
         valid_segment = 0.0 <= projection_t <= 1.0 and (
             segment_dist <= segment_max_distance
         )
@@ -196,7 +196,7 @@ def get_best_wrist_for_handrail_by_rule(keypoints, line, rule, segment_max_dista
         if rule == LEFT_HANDRAIL_RULE:
             valid_d = -LEFT_HANDRAIL_MAX_DISTANCE <= d <= -10
         elif rule == RIGHT_HANDRAIL_RULE:
-            valid_d = -10 <= d <= RIGHT_HANDRAIL_MAX_DISTANCE
+            valid_d = 0 <= d <= RIGHT_HANDRAIL_MAX_DISTANCE
         valid_segment = 0.0 <= projection_t <= 1.0 and (
             segment_dist <= segment_max_distance
         )
@@ -275,7 +275,7 @@ def get_best_wrist_for_handrail_by_rule_from_evidence(
         if rule == LEFT_HANDRAIL_RULE:
             valid_d = -LEFT_HANDRAIL_MAX_DISTANCE <= dist <= -10
         elif rule == RIGHT_HANDRAIL_RULE:
-            valid_d = -10 <= dist <= RIGHT_HANDRAIL_MAX_DISTANCE
+            valid_d = 0 <= dist <= RIGHT_HANDRAIL_MAX_DISTANCE
         valid_segment = 0.0 <= projection_t <= 1.0 and (
             segment_dist <= segment_max_distance
         )

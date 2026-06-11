@@ -2,6 +2,8 @@ import math
 
 import numpy as np
 
+from stair_monitor.settings import BACKWARD_MIN_VALID_EVIDENCE
+
 
 # Kiem tra keypoint co du tin cay de dung cho cac logic suy luan hay khong.
 def _keypoint_is_visible(keypoints, idx, conf_th):
@@ -27,6 +29,16 @@ def _midpoint(point_a, point_b):
     return (
         int((point_a[0] + point_b[0]) / 2),
         int((point_a[1] + point_b[1]) / 2),
+    )
+
+
+def _average_points(points):
+    valid_points = [point for point in points if point is not None]
+    if not valid_points:
+        return None
+    return (
+        int(sum(point[0] for point in valid_points) / len(valid_points)),
+        int(sum(point[1] for point in valid_points) / len(valid_points)),
     )
 
 
@@ -109,42 +121,159 @@ def get_side_name(d):
     return "ON_LINE"
 
 
-# Uoc luong huong than/mat de phuc vu logic di lui, khong dung de tinh lane.
-def estimate_body_facing(keypoints, conf_th=0.5):
-    """
-    Estimate body facing direction from pose keypoints.
+def _build_pair_body_facing_evidence(
+    keypoints,
+    left_idx,
+    right_idx,
+    conf_th=0.5,
+    min_abs_dx=10,
+):
+    left_point = _get_keypoint_point(keypoints, left_idx, conf_th)
+    right_point = _get_keypoint_point(keypoints, right_idx, conf_th)
+    center = _midpoint(left_point, right_point)
 
-    Returns base labels such as FRONT_TO_CAMERA / BACK_TO_CAMERA /
-    SIDE_OR_UNKNOWN / UNKNOWN, or a face-visibility-prefixed variant.
-    """
-    if keypoints is None or len(keypoints) <= 6:
-        return "UNKNOWN"
+    if left_point is None or right_point is None:
+        return {
+            "valid": False,
+            "label": "UNKNOWN",
+            "center": center,
+            "dx": None,
+        }
 
-    if not _keypoint_is_visible(keypoints, 5, conf_th) or not _keypoint_is_visible(
-        keypoints, 6, conf_th
-    ):
-        return "UNKNOWN"
+    dx = int(left_point[0] - right_point[0])
+    if abs(dx) <= min_abs_dx:
+        return {
+            "valid": False,
+            "label": "UNKNOWN",
+            "center": center,
+            "dx": dx,
+        }
 
-    left_shoulder_x = keypoints[5][0]
-    right_shoulder_x = keypoints[6][0]
-    shoulder_dx = left_shoulder_x - right_shoulder_x
+    return {
+        "valid": True,
+        "label": "FRONT_TO_CAMERA" if dx > 0 else "BACK_TO_CAMERA",
+        "center": center,
+        "dx": dx,
+    }
 
-    if abs(shoulder_dx) <= 10:
-        shoulder_guess = "SIDE_OR_UNKNOWN"
-    elif shoulder_dx > 0:
-        shoulder_guess = "FRONT_TO_CAMERA"
-    else:
-        shoulder_guess = "BACK_TO_CAMERA"
 
-    face_visible_count = sum(
-        1 for idx in [0, 1, 2, 3, 4] if _keypoint_is_visible(keypoints, idx, conf_th)
+def _build_head_body_facing_evidence(keypoints, conf_th=0.5):
+    nose = _get_keypoint_point(keypoints, 0, conf_th)
+    left_eye = _get_keypoint_point(keypoints, 1, conf_th)
+    right_eye = _get_keypoint_point(keypoints, 2, conf_th)
+    left_ear = _get_keypoint_point(keypoints, 3, conf_th)
+    right_ear = _get_keypoint_point(keypoints, 4, conf_th)
+
+    visible_points = [nose, left_eye, right_eye, left_ear, right_ear]
+    head_center = _average_points(visible_points)
+    face_visible_count = sum(point is not None for point in visible_points)
+    face_core_visible_count = sum(
+        point is not None for point in [nose, left_eye, right_eye]
     )
 
-    if face_visible_count >= 3:
-        return f"FACE_VISIBLE_{shoulder_guess}"
-    if face_visible_count <= 1:
-        return f"FACE_NOT_VISIBLE_{shoulder_guess}"
-    return shoulder_guess
+    # Head evidence chi vote FRONT khi thay duoc mat dau du ro.
+    # Mat mui/tai/doi mat bi mat thi khong duoc xem la bang chung BACK.
+    head_is_front = (
+        nose is not None
+        or face_core_visible_count >= 2
+        or face_visible_count >= 3
+    )
+    if head_center is None or not head_is_front:
+        return {
+            "valid": False,
+            "label": "UNKNOWN",
+            "center": head_center,
+            "visible_count": face_visible_count,
+        }
+
+    return {
+        "valid": True,
+        "label": "FRONT_TO_CAMERA",
+        "center": head_center,
+        "visible_count": face_visible_count,
+    }
+
+
+def compute_body_facing_evidence(keypoints, conf_th=0.5):
+    if keypoints is None:
+        return {
+            "body_facing": "UNKNOWN",
+            "body_facing_confidence": 0.0,
+            "body_facing_evidence_count": 0,
+            "body_facing_front_votes": 0,
+            "body_facing_back_votes": 0,
+            "body_facing_reason": "NO_KEYPOINTS",
+            "hip_pair_valid": False,
+            "shoulder_pair_valid": False,
+            "ear_pair_valid": False,
+            "head_valid": False,
+        }
+
+    hip_evidence = _build_pair_body_facing_evidence(keypoints, 11, 12, conf_th)
+    shoulder_evidence = _build_pair_body_facing_evidence(keypoints, 5, 6, conf_th)
+    ear_evidence = _build_pair_body_facing_evidence(keypoints, 3, 4, conf_th)
+    head_evidence = _build_head_body_facing_evidence(keypoints, conf_th)
+
+    evidence_list = [
+        hip_evidence,
+        shoulder_evidence,
+        ear_evidence,
+        head_evidence,
+    ]
+    front_votes = sum(
+        1
+        for evidence in evidence_list
+        if evidence["valid"] and evidence["label"] == "FRONT_TO_CAMERA"
+    )
+    back_votes = sum(
+        1
+        for evidence in evidence_list
+        if evidence["valid"] and evidence["label"] == "BACK_TO_CAMERA"
+    )
+    valid_evidence_count = sum(
+        1 for evidence in evidence_list if evidence["valid"]
+    )
+
+    if valid_evidence_count == 0:
+        body_facing = "UNKNOWN"
+        confidence = 0.0
+        reason = "NO_VALID_EVIDENCE"
+    elif valid_evidence_count < BACKWARD_MIN_VALID_EVIDENCE:
+        body_facing = "UNKNOWN"
+        confidence = 0.0
+        reason = "NOT_ENOUGH_VALID_EVIDENCE"
+    elif front_votes > back_votes:
+        body_facing = "FRONT_TO_CAMERA"
+        confidence = front_votes / valid_evidence_count
+        reason = "MAJORITY_FRONT"
+    elif back_votes > front_votes:
+        body_facing = "BACK_TO_CAMERA"
+        confidence = back_votes / valid_evidence_count
+        reason = "MAJORITY_BACK"
+    else:
+        body_facing = "UNKNOWN"
+        confidence = 0.0
+        reason = "CONFLICTING_EVIDENCE"
+
+    return {
+        "body_facing": body_facing,
+        "body_facing_confidence": float(confidence),
+        "body_facing_evidence_count": int(valid_evidence_count),
+        "body_facing_front_votes": int(front_votes),
+        "body_facing_back_votes": int(back_votes),
+        "body_facing_reason": reason,
+        "hip_pair_valid": bool(hip_evidence["valid"]),
+        "shoulder_pair_valid": bool(shoulder_evidence["valid"]),
+        "ear_pair_valid": bool(ear_evidence["valid"]),
+        "head_valid": bool(head_evidence["valid"]),
+    }
+
+
+# Uoc luong huong than/mat de phuc vu logic di lui, khong dung de tinh lane.
+def estimate_body_facing(keypoints, conf_th=0.5):
+    return compute_body_facing_evidence(keypoints, conf_th).get(
+        "body_facing", "UNKNOWN"
+    )
 
 
 # Xac dinh tay trai dang nam ben trai hay ben phai anh de debug body orientation.
@@ -230,12 +359,19 @@ def extract_pose_features(keypoints, bbox):
 
     hip_center = _midpoint(left_hip, right_hip)
     shoulder_center = _midpoint(left_shoulder, right_shoulder)
+    body_facing_evidence = compute_body_facing_evidence(keypoints)
+
+    ankle_valid_count = int(left_ankle is not None) + int(right_ankle is not None)
 
     # feet_point dai dien vi tri nguoi so voi vach giua de xet sai lan.
     if left_ankle is not None and right_ankle is not None:
         feet_point = _midpoint(left_ankle, right_ankle)
+        inside_feet_point = feet_point
     else:
         feet_point = left_ankle or right_ankle or bbox_bottom_center
+        inside_feet_point = left_ankle or right_ankle
+    # Buoc dau chi xem chan "dang tin" khi thay duoc it nhat 1 ankle.
+    feet_reliable = ankle_valid_count > 0
 
     # motion_point dai dien cho chuyen dong tong the cua nguoi.
     # Khong uu tien chan vi chan de nhieu khi pose rung hoac buoc buoc tren cau thang.
@@ -259,6 +395,9 @@ def extract_pose_features(keypoints, bbox):
         "shoulder_center": shoulder_center,
         "motion_point": motion_point,
         "feet_point": feet_point,
+        "inside_feet_point": inside_feet_point,
+        "ankle_valid_count": ankle_valid_count,
+        "feet_reliable": feet_reliable,
         "left_arm_angle": _calculate_arm_angle_from_points(
             left_shoulder,
             left_elbow,
@@ -269,9 +408,29 @@ def extract_pose_features(keypoints, bbox):
             right_elbow,
             right_wrist,
         ),
-        "body_facing": estimate_body_facing(keypoints),
+        "body_facing": body_facing_evidence["body_facing"],
+        "body_facing_confidence": body_facing_evidence[
+            "body_facing_confidence"
+        ],
+        "body_facing_evidence_count": body_facing_evidence[
+            "body_facing_evidence_count"
+        ],
+        "body_facing_front_votes": body_facing_evidence[
+            "body_facing_front_votes"
+        ],
+        "body_facing_back_votes": body_facing_evidence["body_facing_back_votes"],
+        "body_facing_reason": body_facing_evidence["body_facing_reason"],
+        "hip_pair_valid": body_facing_evidence["hip_pair_valid"],
+        "shoulder_pair_valid": body_facing_evidence["shoulder_pair_valid"],
+        "ear_pair_valid": body_facing_evidence["ear_pair_valid"],
+        "head_valid": body_facing_evidence["head_valid"],
         "arm_side_order": estimate_arm_side_order(keypoints),
         "keypoint_valid": {
+            "nose": _get_keypoint_point(keypoints, 0) is not None,
+            "left_eye": _get_keypoint_point(keypoints, 1) is not None,
+            "right_eye": _get_keypoint_point(keypoints, 2) is not None,
+            "left_ear": _get_keypoint_point(keypoints, 3) is not None,
+            "right_ear": _get_keypoint_point(keypoints, 4) is not None,
             "left_wrist": left_wrist is not None,
             "right_wrist": right_wrist is not None,
             "left_elbow": left_elbow is not None,

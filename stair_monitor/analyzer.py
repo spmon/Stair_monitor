@@ -14,12 +14,14 @@ from stair_monitor.handrail_analysis import (
 from stair_monitor.result_builder import ResultBuilderMixin
 from stair_monitor.settings import (
     ANALYZING_COLOR,
+    BACKWARD_MIN_VALID_EVIDENCE,
     DEMO_MODE,
     DIRECTION_HISTORY_LEN,
     DIRECTION_MIN_FRAMES,
     DIRECTION_PIXEL_THRESHOLD,
     DIRECTION_SIGN_NORMAL,
     ENABLE_PERF_LOG,
+    INSIDE_STAIRS_GRACE_FRAMES,
     LANE_SIGN_NORMAL,
     OUTSIDE_COLOR,
     SAFE_COLOR,
@@ -80,6 +82,12 @@ class BehaviorAnalyzer(
         self.backward_history = {}
         self.standing_history = {}
         self.standing_motion_history = {}
+        self.inside_last_seen = {}
+        self.frame_index = -1
+
+    def begin_frame(self):
+        # Gia tri nay chi tang 1 lan cho moi frame video de cac grace history khop theo frame.
+        self.frame_index += 1
 
     # Kiem tra p_lane co nam trong polygon cau thang hay khong.
     # Sai lan/hold/standing chi nen duoc ket luan khi nguoi dang o trong vung nay.
@@ -92,6 +100,138 @@ class BehaviorAnalyzer(
             (float(p_lane[0]), float(p_lane[1])),
             False,
         ) >= 0
+
+    def _evaluate_inside_stairs(self, track_id, features, fallback_lane_point):
+        _ = fallback_lane_point
+        left_ankle = features.get("left_ankle")
+        right_ankle = features.get("right_ankle")
+        left_ankle_valid = left_ankle is not None
+        right_ankle_valid = right_ankle is not None
+        valid_foot_count = int(left_ankle_valid) + int(right_ankle_valid)
+        ankle_valid_count = valid_foot_count
+        # Grace chi duoc phep chay khi KHONG co ankle hop le.
+        # Khong duoc tin co "feet_reliable" caller truyen vao neu no lech voi ankle count.
+        feet_reliable = ankle_valid_count > 0
+        inside_feet_point = None
+        inside_raw_by_feet = None
+        inside_reason = "FEET_MISSING_NO_HISTORY"
+        inside_grace_left = 0
+        left_foot_in = False
+        right_foot_in = False
+
+        if feet_reliable:
+            if left_ankle_valid:
+                left_foot_in = self.is_inside_stairs(left_ankle)
+            if right_ankle_valid:
+                right_foot_in = self.is_inside_stairs(right_ankle)
+
+            inside_raw_by_feet = left_foot_in or right_foot_in
+            if left_foot_in:
+                inside_feet_point = left_ankle
+            elif right_foot_in:
+                inside_feet_point = right_ankle
+            else:
+                inside_feet_point = left_ankle or right_ankle
+
+            if inside_raw_by_feet:
+                self.inside_last_seen[track_id] = self.frame_index
+                return (
+                    True,
+                    inside_feet_point,
+                    ankle_valid_count,
+                    feet_reliable,
+                    inside_raw_by_feet,
+                    "ANY_FOOT_IN",
+                    inside_grace_left,
+                    left_ankle_valid,
+                    right_ankle_valid,
+                    left_foot_in,
+                    right_foot_in,
+                    valid_foot_count,
+                )
+
+            self.inside_last_seen.pop(track_id, None)
+            return (
+                False,
+                inside_feet_point,
+                ankle_valid_count,
+                feet_reliable,
+                inside_raw_by_feet,
+                "ALL_VISIBLE_FEET_OUT",
+                inside_grace_left,
+                left_ankle_valid,
+                right_ankle_valid,
+                left_foot_in,
+                right_foot_in,
+                valid_foot_count,
+            )
+
+        last_seen = self.inside_last_seen.get(track_id)
+        if last_seen is not None:
+            frame_gap = self.frame_index - last_seen
+            if frame_gap <= INSIDE_STAIRS_GRACE_FRAMES:
+                inside_grace_left = max(
+                    0,
+                    INSIDE_STAIRS_GRACE_FRAMES - frame_gap + 1,
+                )
+                return (
+                    True,
+                    inside_feet_point,
+                    ankle_valid_count,
+                    feet_reliable,
+                    inside_raw_by_feet,
+                    "FEET_MISSING_GRACE",
+                    inside_grace_left,
+                    left_ankle_valid,
+                    right_ankle_valid,
+                    left_foot_in,
+                    right_foot_in,
+                    valid_foot_count,
+                )
+
+            self.inside_last_seen.pop(track_id, None)
+
+        return (
+            False,
+            inside_feet_point,
+            ankle_valid_count,
+            feet_reliable,
+            inside_raw_by_feet,
+            inside_reason,
+            inside_grace_left,
+            left_ankle_valid,
+            right_ankle_valid,
+            left_foot_in,
+            right_foot_in,
+            valid_foot_count,
+        )
+
+    def _select_p_lane_for_lane(self, features, direction):
+        left_ankle = features.get("left_ankle")
+        right_ankle = features.get("right_ankle")
+        left_valid = left_ankle is not None
+        right_valid = right_ankle is not None
+
+        if not left_valid and not right_valid:
+            return None, "NONE", "NO_VALID_FOOT_FOR_LANE"
+
+        if direction not in ("UP", "DOWN"):
+            return None, "NONE", "UNKNOWN_DIRECTION"
+
+        if left_valid and right_valid:
+            if direction == "DOWN":
+                return (
+                    left_ankle if left_ankle[1] >= right_ankle[1] else right_ankle,
+                    "LOWER_FOOT_DOWN",
+                    "FEET_VISIBLE",
+                )
+            return (
+                left_ankle if left_ankle[1] <= right_ankle[1] else right_ankle,
+                "HIGHER_FOOT_UP",
+                "FEET_VISIBLE",
+            )
+
+        return left_ankle or right_ankle, "SINGLE_FOOT", "FEET_VISIBLE"
 
     @staticmethod
     # Trang thai claim duoc luu rieng cho tung tay cua tung track.
@@ -255,6 +395,8 @@ class BehaviorAnalyzer(
         # p_lane dung cho sai lan va kiem tra trong vung cau thang.
         perf = {} if ENABLE_PERF_LOG else None
         analyze_start = time.perf_counter() if perf is not None else None
+        if self.frame_index < 0:
+            self.frame_index = 0
 
         features = features or extract_pose_features(keypoints, box)
         # Neu caller chua truyen san, lay diem dai dien tu pose feature da extract.
@@ -264,6 +406,23 @@ class BehaviorAnalyzer(
             p_motion = features.get("motion_point")
 
         body_facing = features.get("body_facing", "UNKNOWN")
+        body_facing_confidence = float(
+            features.get("body_facing_confidence", 0.0) or 0.0
+        )
+        body_facing_evidence_count = int(
+            features.get("body_facing_evidence_count", 0) or 0
+        )
+        body_facing_front_votes = int(
+            features.get("body_facing_front_votes", 0) or 0
+        )
+        body_facing_back_votes = int(
+            features.get("body_facing_back_votes", 0) or 0
+        )
+        body_facing_reason = features.get("body_facing_reason", "UNKNOWN")
+        hip_pair_valid = bool(features.get("hip_pair_valid", False))
+        shoulder_pair_valid = bool(features.get("shoulder_pair_valid", False))
+        ear_pair_valid = bool(features.get("ear_pair_valid", False))
+        head_valid = bool(features.get("head_valid", False))
         arm_side_order = features.get("arm_side_order", "UNKNOWN")
 
         direction = "ANALYZING"
@@ -272,7 +431,22 @@ class BehaviorAnalyzer(
         wrong_lane_raw = False
         wrong_lane = False
         lane_wrong_hits = 0
+        lane_status = "UNKNOWN"
+        lane_reason = "NA"
+        lane_direction = "ANALYZING"
+        p_lane_source = "NONE"
         inside_stairs = False
+        inside_feet_point = features.get("inside_feet_point") or p_lane
+        ankle_valid_count = int(features.get("ankle_valid_count", 0) or 0)
+        feet_reliable = ankle_valid_count > 0
+        inside_raw_by_feet = None
+        inside_reason = "UNKNOWN"
+        inside_grace_left = 0
+        left_ankle_valid = bool(features.get("left_ankle") is not None)
+        right_ankle_valid = bool(features.get("right_ankle") is not None)
+        left_foot_in = False
+        right_foot_in = False
+        valid_foot_count = ankle_valid_count
 
         holding = False
         holding_raw = False
@@ -314,6 +488,7 @@ class BehaviorAnalyzer(
         backward_raw = False
         backward_hits = 0
         backward_confirmed = False
+        backward_reason = "UNKNOWN_NOT_ENOUGH_EVIDENCE"
         standing_raw = False
         standing_hits = 0
         standing_still_confirmed = False
@@ -346,7 +521,20 @@ class BehaviorAnalyzer(
         # Standing still su dung lich su p_motion va doc lap voi direction.
         # Nguoi chua du dieu kien ket luan UP/DOWN van co the bi bao Dung Yen.
         standing_start = time.perf_counter() if perf is not None else None
-        inside_stairs = self.is_inside_stairs(p_lane)
+        (
+            inside_stairs,
+            inside_feet_point,
+            ankle_valid_count,
+            feet_reliable,
+            inside_raw_by_feet,
+            inside_reason,
+            inside_grace_left,
+            left_ankle_valid,
+            right_ankle_valid,
+            left_foot_in,
+            right_foot_in,
+            valid_foot_count,
+        ) = self._evaluate_inside_stairs(track_id, features, p_lane)
         if inside_stairs:
             (
                 standing_raw,
@@ -570,20 +758,69 @@ class BehaviorAnalyzer(
         # Di lui can ca direction va body facing cung on dinh.
         # DOWN + FRONT_TO_CAMERA va UP + BACK_TO_CAMERA duoc xem la di lui.
         backward_start = time.perf_counter() if perf is not None else None
-        if direction == "DOWN" and is_front_to_camera(body_facing):
+        backward_history_value = False
+        body_facing_reliable = (
+            body_facing in ("FRONT_TO_CAMERA", "BACK_TO_CAMERA")
+            and body_facing_confidence > 0.5
+            and body_facing_evidence_count >= BACKWARD_MIN_VALID_EVIDENCE
+        )
+        upper_body_occluded = not (
+            hip_pair_valid
+            and shoulder_pair_valid
+            and (ear_pair_valid or head_valid)
+        )
+
+        if not body_facing_reliable:
+            backward_raw = False
+            backward_history_value = None
+            if upper_body_occluded or body_facing_evidence_count < BACKWARD_MIN_VALID_EVIDENCE:
+                backward_reason = "UNKNOWN_OCCLUDED"
+            else:
+                backward_reason = "UNKNOWN_NOT_ENOUGH_EVIDENCE"
+        elif direction == "DOWN" and is_front_to_camera(body_facing):
             backward_raw = True
+            backward_history_value = True
+            backward_reason = "OK_DOWN_FRONT"
         elif direction == "UP" and is_back_to_camera(body_facing):
             backward_raw = True
+            backward_history_value = True
+            backward_reason = "OK_UP_BACK"
+        else:
+            backward_raw = False
+            backward_history_value = False
+            backward_reason = "NORMAL_DIRECTION_FACING"
 
         backward_hits, backward_confirmed = self._update_backward_history(
-            track_id, backward_raw
+            track_id, backward_history_value
         )
         self._record_perf(perf, "backward", backward_start)
 
         # p_lane dung de xac dinh nguoi dang dung ben nao cua vach giua.
         # Sai lan chi nen xet khi da co direction UP/DOWN; lane history giup chong nhieu pose.
         lane_start = time.perf_counter() if perf is not None else None
-        if len(self.center_line) >= 2:
+        lane_direction = direction
+        selected_p_lane, p_lane_source, selection_reason = self._select_p_lane_for_lane(
+            features,
+            direction,
+        )
+        p_lane = selected_p_lane
+        if not feet_reliable:
+            wrong_lane_raw = False
+            wrong_lane = False
+            lane_wrong_hits = 0
+            lane_status = "UNKNOWN"
+            lane_reason = "NO_VALID_FOOT_FOR_LANE"
+            p_lane = None
+            p_lane_source = "NONE"
+        elif direction not in ("UP", "DOWN"):
+            p_lane = None
+            lane_wrong_hits, wrong_lane = self._get_lane_history_state(track_id)
+            lane_status = "UNKNOWN"
+            lane_reason = selection_reason
+        elif p_lane is None:
+            lane_status = "UNKNOWN"
+            lane_reason = selection_reason
+        elif len(self.center_line) >= 2 and p_lane is not None:
             a, b = self.center_line[0], self.center_line[1]
             v = (b[0] - a[0]) * (p_lane[1] - a[1]) - (b[1] - a[1]) * (
                 p_lane[0] - a[0]
@@ -601,8 +838,15 @@ class BehaviorAnalyzer(
                 lane_wrong_hits, wrong_lane = self._update_lane_history(
                     track_id, wrong_lane_raw
                 )
+                lane_status = "EVALUATED"
+                lane_reason = selection_reason
             else:
                 lane_wrong_hits, wrong_lane = self._get_lane_history_state(track_id)
+                lane_status = "UNKNOWN"
+                lane_reason = selection_reason
+        else:
+            lane_status = "UNKNOWN"
+            lane_reason = "CENTER_LINE_MISSING"
         self._record_perf(perf, "lane", lane_start)
 
         # Khi chua biet chieu di, khong the xac dinh lan can dung/sai ben.
@@ -761,6 +1005,7 @@ class BehaviorAnalyzer(
             self.lane_history,
             self.hold_status_history,
             self.last_valid_direction,
+            self.inside_last_seen,
             self.hand_claim_state,
             self.front_carry_history,
             self.front_carry_one_arm_history,

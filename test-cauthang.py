@@ -1,3 +1,4 @@
+import os
 import time
 
 import cv2
@@ -17,6 +18,8 @@ from stair_monitor.settings import (
     DRAW_DEBUG,
     ENABLE_PERF_LOG,
     PERF_LOG_INTERVAL,
+    SAVE_MODEL_INPUT_DEBUG,
+    SAVE_MODEL_INPUT_DEBUG_EVERY,
     SAVE_OUTPUT_VIDEO,
     SHOW_PEOPLE_COUNT,
     VIOLATION_COUNT_LABELS,
@@ -108,6 +111,30 @@ def _build_demo_alert_display_counts(
     return display_counts
 
 
+def _ensure_debug_snapshot_dirs():
+    if not SAVE_MODEL_INPUT_DEBUG:
+        return None, None
+
+    model_input_dir = os.path.join("debug_model_input")
+    overlay_dir = os.path.join("debug_overlay")
+    os.makedirs(model_input_dir, exist_ok=True)
+    os.makedirs(overlay_dir, exist_ok=True)
+    return model_input_dir, overlay_dir
+
+
+def _save_debug_snapshots(frame_index, model_input_frame, overlay_frame, model_input_dir, overlay_dir):
+    if not SAVE_MODEL_INPUT_DEBUG or model_input_dir is None or overlay_dir is None:
+        return
+
+    interval = max(1, int(SAVE_MODEL_INPUT_DEBUG_EVERY or 1))
+    if frame_index % interval != 0:
+        return
+
+    filename = f"frame_{frame_index:04d}.jpg"
+    cv2.imwrite(os.path.join(model_input_dir, filename), model_input_frame)
+    cv2.imwrite(os.path.join(overlay_dir, filename), overlay_frame)
+
+
 # Main loop cua demo stair_monitor tren Windows.
 # Flow: mo video -> doc frame -> chay model/tracker -> xu ly tung person -> ve overlay -> ghi output.
 def process_video():
@@ -122,7 +149,7 @@ def process_video():
         out = cv2.VideoWriter(
             VIDEO_OUTPUT_PATH,
             cv2.VideoWriter_fourcc(*"mp4v"),
-            25,
+            15,
             (int(cap.get(3)), int(cap.get(4))),
         )
 
@@ -133,6 +160,8 @@ def process_video():
     perf_window_start = time.perf_counter() if ENABLE_PERF_LOG else None
     perf_window_frames = 0
     demo_alert_last_seen = {}
+    debug_frame_index = 0
+    model_input_dir, overlay_dir = _ensure_debug_snapshot_dirs()
 
     # Vong lap doc tung frame video cho den khi het video hoac doc loi.
     while cap.isOpened():
@@ -141,6 +170,15 @@ def process_video():
         ret, frame = cap.read()
         if not ret:
             break
+        analyzer.begin_frame()
+        debug_frame_index += 1
+
+        # frame_raw la anh goc sach tu video.
+        # model_frame la ban copy sach chi dung cho inference.
+        # overlay_frame la ban copy rieng chi dung de ve demo/debug.
+        frame_raw = frame.copy()
+        model_frame = frame_raw.copy()
+        overlay_frame = frame_raw.copy()
 
         # current_* chi dem trong frame hien tai.
         # total_* la tong hop tu dau video den hien tai, dung set track_id de 1 nguoi khong bi tinh lap lai.
@@ -148,26 +186,28 @@ def process_video():
         current_violation_track_ids = set()
         current_violation_counts = {label: 0 for label in VIOLATION_COUNT_LABELS}
         active_violations = set()
-        debug_frame = frame
+        active_track_ids = set()
+        model_input_snapshot = model_frame.copy() if SAVE_MODEL_INPUT_DEBUG else None
 
         # Chay model/tracker de lay bbox, track_id va keypoint cho tung nguoi.
         model_start = time.perf_counter() if ENABLE_PERF_LOG else None
         results = model.track(
-            frame,
-            conf=0.5,
+            model_frame,
+            conf=0.7,
             persist=True,
             classes=[0],
             tracker="bytetrack.yaml",
             verbose=False,
+            iou=0.9
         )
         if perf_totals is not None:
             perf_totals["model"] += (time.perf_counter() - model_start) * 1000.0
 
         # Gom toan bo thao tac ve overlay vao 1 context de giu tieng Viet co dau.
-        with VietnameseTextDrawer(debug_frame) as text_drawer:
+        with VietnameseTextDrawer(overlay_frame) as text_drawer:
             overlay_start = time.perf_counter() if ENABLE_PERF_LOG else None
             if DRAW_DEBUG and not DEMO_MODE:
-                draw_scene_guides(debug_frame, CONFIG, analyzer)
+                draw_scene_guides(overlay_frame, CONFIG, analyzer)
 
             if results[0].boxes.id is not None:
                 # Xu ly tung nguoi trong frame hien tai.
@@ -176,6 +216,7 @@ def process_video():
                     results[0].boxes.id.int().tolist(),
                     results[0].keypoints.data.cpu().numpy(),
                 ):
+                    active_track_ids.add(int(tid))
                     features = extract_pose_features(kpt, box)
                     # p_lane dung cho sai lan; p_motion dung cho direction/backward/standing.
                     p_lane = features.get("feet_point")
@@ -216,7 +257,7 @@ def process_video():
 
                     # Ve ket qua len frame sau khi da co full analysis.
                     draw_person_overlay(
-                        debug_frame,
+                        overlay_frame,
                         box,
                         kpt,
                         p_lane,
@@ -224,6 +265,8 @@ def process_video():
                         ana,
                         text_drawer=text_drawer,
                     )
+
+            analyzer.cleanup_inactive_tracks(active_track_ids)
 
             if perf_totals is not None:
                 perf_totals["overlay"] += (
@@ -250,7 +293,7 @@ def process_video():
                 # Ve panel tong hop len video.
                 summary_start = time.perf_counter() if ENABLE_PERF_LOG else None
                 draw_violation_summary(
-                    debug_frame,
+                    overlay_frame,
                     current_inside_count,
                     current_violation_people_count,
                     current_violation_counts,
@@ -264,10 +307,18 @@ def process_video():
                         time.perf_counter() - summary_start
                     ) * 1000.0
 
+        _save_debug_snapshots(
+            debug_frame_index,
+            model_input_snapshot if model_input_snapshot is not None else model_frame,
+            overlay_frame,
+            model_input_dir,
+            overlay_dir,
+        )
+
         # Ghi frame output sau khi da ve xong overlay.
         if SAVE_OUTPUT_VIDEO and out is not None:
             write_start = time.perf_counter() if ENABLE_PERF_LOG else None
-            out.write(debug_frame)
+            out.write(overlay_frame)
             if perf_totals is not None:
                 perf_totals["video_write_show"] += (
                     time.perf_counter() - write_start
