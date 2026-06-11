@@ -542,21 +542,49 @@ def draw_person_overlay(
         )
 
     if ENABLE_DEBUG_OVERLAY and ENABLE_VERBOSE_PERSON_DEBUG:
-        for idx, debug_text in enumerate(build_debug_lines(analysis)):
+        debug_lines = build_debug_lines(analysis)
+        debug_font = cv2.FONT_HERSHEY_SIMPLEX
+        debug_font_scale = 0.5
+        debug_thickness = 2
+        debug_line_gap = 18
+        debug_top_margin = 20
+        _, frame_w = frame.shape[:2]
+
+        max_line_width = 0
+        for debug_text in debug_lines:
+            (line_width, _), _ = cv2.getTextSize(
+                debug_text,
+                debug_font,
+                debug_font_scale,
+                debug_thickness,
+            )
+            max_line_width = max(max_line_width, line_width)
+
+        debug_x = x2 + 5
+        if debug_x + max_line_width > frame_w - 5:
+            debug_x = max(5, x1 - max_line_width - 5)
+
+        debug_x = max(5, min(debug_x, max(5, frame_w - max_line_width - 5)))
+        debug_base_y = debug_top_margin
+
+        for idx, debug_text in enumerate(debug_lines):
             cv2.putText(
                 frame,
                 debug_text,
-                (x2 + 5, y1 + 15 + idx * 18),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
+                (debug_x, debug_base_y + idx * debug_line_gap),
+                debug_font,
+                debug_font_scale,
                 (0, 255, 255),
-                2,
+                debug_thickness,
             )
 
 
 # Ve panel tong so nguoi dang nam trong vung cau thang.
 def draw_people_count(frame, current_inside_count, text_drawer=None):
     if not ENABLE_SUMMARY_PANEL:
+        return
+
+    if DEMO_MODE and not ENABLE_DEBUG_OVERLAY:
         return
 
     draw_transparent_panel_with_vietnamese_text(
@@ -691,6 +719,14 @@ def draw_violation_summary(
     if not ENABLE_SUMMARY_PANEL:
         return
 
+    if DEMO_MODE and not ENABLE_DEBUG_OVERLAY:
+        draw_demo_violation_panel(
+            frame,
+            demo_violation_counts or current_violation_counts,
+            text_drawer=text_drawer,
+        )
+        return
+
     font_size = 26 if frame.shape[1] >= 1400 else 22
     margin = 20
 
@@ -733,15 +769,7 @@ def draw_violation_summary(
         text_drawer=text_drawer,
     )
 
-    if DEMO_MODE and not ENABLE_DEBUG_OVERLAY:
-        draw_demo_violation_panel(
-            frame,
-            demo_violation_counts or current_violation_counts,
-            text_drawer=text_drawer,
-        )
 
-
-# Gom cac dong debug chi tiet de ve ben canh bbox khi can phan tich loi.
 def build_debug_lines(analysis):
     analysis = analysis.get("debug_info") or analysis
     return [
@@ -782,13 +810,41 @@ def build_debug_lines(analysis):
         else "LANE_V:NA",
         f"DIR:{analysis.get('direction', 'NA')}",
         f"INSIDE_STAIRS:{analysis.get('inside_stairs', False)}",
+        f"INSIDE_FINAL:{analysis.get('inside_stairs', False)}",
+        f"FEET_RELIABLE:{analysis.get('feet_reliable', False)}",
+        f"ANKLE_VALID_COUNT:{analysis.get('ankle_valid_count', 0)}",
+        f"LEFT_ANKLE_VALID:{analysis.get('left_ankle_valid', False)}",
+        f"RIGHT_ANKLE_VALID:{analysis.get('right_ankle_valid', False)}",
+        f"LEFT_FOOT_IN:{analysis.get('left_foot_in', False)}",
+        f"RIGHT_FOOT_IN:{analysis.get('right_foot_in', False)}",
+        f"VALID_FOOT_COUNT:{analysis.get('valid_foot_count', 0)}",
+        f"INSIDE_RAW_BY_FEET:{analysis.get('inside_raw_by_feet')}"
+        if analysis.get("inside_raw_by_feet") is not None
+        else "INSIDE_RAW_BY_FEET:NA",
+        f"INSIDE_REASON:{analysis.get('inside_reason', 'UNKNOWN')}",
+        f"INSIDE_GRACE_LEFT:{analysis.get('inside_grace_left', 0)}",
+        f"INSIDE_FEET:{analysis['inside_feet_point'][0]},{analysis['inside_feet_point'][1]}"
+        if analysis.get("inside_feet_point") is not None
+        else "INSIDE_FEET:NA",
         f"LANE_RAW:{analysis.get('lane_raw', False)}",
         f"LANE_HITS:{analysis.get('lane_hits', 0)}",
         f"LANE_CONF:{analysis.get('lane_conf', False)}",
-        f"BODY_FACE:{analysis.get('body_facing', 'UNKNOWN')}",
+        f"LANE_DIRECTION:{analysis.get('lane_direction', 'ANALYZING')}",
+        f"LANE_REASON:{analysis.get('lane_reason', 'NA')}",
+        f"P_LANE_SOURCE:{analysis.get('p_lane_source', 'NONE')}",
+        f"BODY_FACING:{analysis.get('body_facing', 'UNKNOWN')}",
+        f"BODY_FACING_CONF:{analysis.get('body_facing_confidence', 0.0):.2f}",
+        f"BODY_FACING_EVIDENCE_COUNT:{analysis.get('body_facing_evidence_count', 0)}",
+        f"BODY_FACING_FRONT_VOTES:{analysis.get('body_facing_front_votes', 0)}",
+        f"BODY_FACING_BACK_VOTES:{analysis.get('body_facing_back_votes', 0)}",
+        f"HIP_PAIR_VALID:{analysis.get('hip_pair_valid', False)}",
+        f"SHOULDER_PAIR_VALID:{analysis.get('shoulder_pair_valid', False)}",
+        f"EAR_PAIR_VALID:{analysis.get('ear_pair_valid', False)}",
+        f"HEAD_VALID:{analysis.get('head_valid', False)}",
         f"BACKWARD_RAW:{analysis.get('backward_raw', False)}",
         f"BACKWARD_HITS:{analysis.get('backward_hits', 0)}",
         f"BACKWARD_CONF:{analysis.get('backward_confirmed', False)}",
+        f"BACKWARD_REASON:{analysis.get('backward_reason', 'UNKNOWN')}",
         f"STAND_RAW:{analysis.get('standing_raw', False)}",
         f"STAND_HITS:{analysis.get('standing_hits', 0)}",
         f"STAND_CONF:{analysis.get('standing_still_confirmed', False)}",
@@ -880,6 +936,12 @@ def build_debug_lines(analysis):
         f"FRONT_HITS:{analysis.get('front_carry_hits', 0)}",
         f"FRONT_CONF:{analysis.get('front_carry_confirmed', False)}",
         f"LANE_ERR:{analysis.get('wrong_lane', False)}",
+        f"P_LANE_X:{analysis['p_lane'][0]}"
+        if analysis.get("p_lane") is not None
+        else "P_LANE_X:NA",
+        f"P_LANE_Y:{analysis['p_lane'][1]}"
+        if analysis.get("p_lane") is not None
+        else "P_LANE_Y:NA",
         f"P_LANE:{analysis['p_lane'][0]},{analysis['p_lane'][1]}"
         if analysis.get("p_lane") is not None
         else "P_LANE:NA",
