@@ -3,6 +3,7 @@ import numpy as np
 from stair_monitor.settings import (
     BACKWARD_HISTORY_LEN,
     BACKWARD_MIN_HITS,
+    HEAD_LANE_CONFIRM_FRAMES,
     HOLD_HISTORY_LEN,
     HOLD_MIN_NOT_HOLD_EVIDENCE_HITS,
     HOLD_MIN_WRONG_SIDE_HITS,
@@ -20,6 +21,15 @@ class BehaviorHistoryMixin:
     def _reset_behavior_histories(self, track_id):
         if track_id in self.lane_history:
             self.lane_history[track_id] = []
+        if hasattr(self, "head_lane_history") and track_id in self.head_lane_history:
+            self.head_lane_history[track_id] = []
+        if hasattr(self, "head_zone_hits") and track_id in self.head_zone_hits:
+            self.head_zone_hits[track_id] = 0
+        if (
+            hasattr(self, "ever_confirmed_inside")
+            and track_id in self.ever_confirmed_inside
+        ):
+            self.ever_confirmed_inside[track_id] = False
         if track_id in self.hold_status_history:
             self.hold_status_history[track_id] = []
         if track_id in self.front_carry_history:
@@ -113,6 +123,25 @@ class BehaviorHistoryMixin:
         self.lane_history[track_id] = self.lane_history[track_id][-LANE_HISTORY_LEN:]
 
         return self._get_lane_history_state(track_id)
+
+    def _get_head_lane_history_state(self, track_id):
+        history = self.head_lane_history.get(track_id, [])
+        head_lane_hits = sum(1 for is_wrong in history if is_wrong)
+        head_lane_confirmed = (
+            len(history) >= HEAD_LANE_CONFIRM_FRAMES
+            and head_lane_hits >= HEAD_LANE_CONFIRM_FRAMES
+        )
+        return head_lane_hits, head_lane_confirmed
+
+    def _update_head_lane_history(self, track_id, wrong_lane_raw):
+        if track_id not in self.head_lane_history:
+            self.head_lane_history[track_id] = []
+
+        self.head_lane_history[track_id].append(bool(wrong_lane_raw))
+        self.head_lane_history[track_id] = self.head_lane_history[track_id][
+            -HEAD_LANE_CONFIRM_FRAMES:
+        ]
+        return self._get_head_lane_history_state(track_id)
 
     # Di lui chi duoc xac nhan khi direction va body facing on dinh trong nhieu frame lien tiep.
     def _update_backward_history(self, track_id, backward_raw):

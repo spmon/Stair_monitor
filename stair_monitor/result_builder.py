@@ -10,6 +10,9 @@ from stair_monitor.settings import (
 )
 
 REAL_VIOLATION_LABELS = list(VIOLATION_COUNT_LABELS)
+LANE_SUPPRESSED_HOLD_WARNINGS = frozenset(
+    {"Khong Vin", "Vin Sai Ben", "Khong Xac Dinh"}
+)
 DISPLAY_TEXT_REPLACEMENTS = {
     **VIOLATION_DISPLAY_NAMES,
     "Khong Xac Dinh": "Không xác định",
@@ -28,8 +31,16 @@ RESULT_CONTEXT_FIELDS = (
     ("wrong_lane", "wrong_lane"),
     ("lane_status", "lane_status"),
     ("lane_reason", "lane_reason"),
+    ("lane_source", "lane_source"),
     ("lane_direction", "lane_direction"),
     ("p_lane_source", "p_lane_source"),
+    ("lane_missing_feet_grace_left", "lane_missing_feet_grace_left"),
+    ("foot_lane_side", "foot_lane_side"),
+    ("head_lane_side", "head_lane_side"),
+    ("head_lane_raw", "head_lane_raw"),
+    ("head_lane_hits", "head_lane_hits"),
+    ("head_lane_sign_normal", "head_lane_sign_normal"),
+    ("head_center_line_valid", "head_center_line_valid"),
     ("inside_stairs", "inside_stairs"),
     ("inside_feet_point", "inside_feet_point"),
     ("ankle_valid_count", "ankle_valid_count"),
@@ -39,6 +50,14 @@ RESULT_CONTEXT_FIELDS = (
     ("left_foot_in", "left_foot_in"),
     ("right_foot_in", "right_foot_in"),
     ("valid_foot_count", "valid_foot_count"),
+    ("head_zone_enabled", "head_zone_enabled"),
+    ("upper_point", "upper_point"),
+    ("upper_point_source", "upper_point_source"),
+    ("upper_point_in_head_zone", "upper_point_in_head_zone"),
+    ("upper_body_in_head_zone", "upper_body_in_head_zone"),
+    ("head_zone_hits", "head_zone_hits"),
+    ("track_zone_state", "track_zone_state"),
+    ("ever_confirmed_inside", "ever_confirmed_inside"),
     ("inside_raw_by_feet", "inside_raw_by_feet"),
     ("inside_reason", "inside_reason"),
     ("inside_grace_left", "inside_grace_left"),
@@ -163,8 +182,16 @@ DEBUG_INFO_FIELDS = (
     "wrong_lane",
     "lane_status",
     "lane_reason",
+    "lane_source",
     "lane_direction",
     "p_lane_source",
+    "lane_missing_feet_grace_left",
+    "foot_lane_side",
+    "head_lane_side",
+    "head_lane_raw",
+    "head_lane_hits",
+    "head_lane_sign_normal",
+    "head_center_line_valid",
     "inside_stairs",
     "inside_feet_point",
     "ankle_valid_count",
@@ -174,6 +201,14 @@ DEBUG_INFO_FIELDS = (
     "left_foot_in",
     "right_foot_in",
     "valid_foot_count",
+    "head_zone_enabled",
+    "upper_point",
+    "upper_point_source",
+    "upper_point_in_head_zone",
+    "upper_body_in_head_zone",
+    "head_zone_hits",
+    "track_zone_state",
+    "ever_confirmed_inside",
     "inside_raw_by_feet",
     "inside_reason",
     "inside_grace_left",
@@ -283,6 +318,20 @@ DEBUG_INFO_FIELDS = (
 
 class ResultBuilderMixin:
     @staticmethod
+    def _lane_suppresses_hold_display(warnings):
+        return "Sai Lan" in warnings
+
+    @staticmethod
+    def _apply_lane_warning_priority(warnings):
+        if not ResultBuilderMixin._lane_suppresses_hold_display(warnings):
+            return warnings
+        return [
+            warning
+            for warning in warnings
+            if warning not in LANE_SUPPRESSED_HOLD_WARNINGS
+        ]
+
+    @staticmethod
     # Doi nhan noi bo sang chuoi hien thi de overlay doc de hon.
     def _translate_display_text(text):
         translated = text or ""
@@ -329,7 +378,7 @@ class ResultBuilderMixin:
             warnings.append("Di Lui")
         if standing_still_confirmed:
             warnings.append("Dung Yen")
-        return warnings
+        return ResultBuilderMixin._apply_lane_warning_priority(warnings)
 
     def _summarize_result(
         self,
@@ -353,8 +402,14 @@ class ResultBuilderMixin:
         else:
             color = safe_color
 
+        lane_suppresses_hold_display = self._lane_suppresses_hold_display(warnings)
         status_warnings = list(warnings)
-        if hold_final_status == "UNKNOWN" and not DEMO_MODE and "Khong Xac Dinh" not in status_warnings:
+        if (
+            hold_final_status == "UNKNOWN"
+            and not DEMO_MODE
+            and not lane_suppresses_hold_display
+            and "Khong Xac Dinh" not in status_warnings
+        ):
             status_warnings.append("Khong Xac Dinh")
 
         status = (
@@ -414,8 +469,16 @@ class ResultBuilderMixin:
         wrong_lane=False,
         lane_status="UNKNOWN",
         lane_reason="NA",
+        lane_source="NO_LANE",
         lane_direction="ANALYZING",
         p_lane_source="NONE",
+        lane_missing_feet_grace_left=0,
+        foot_lane_side=None,
+        head_lane_side=None,
+        head_lane_raw=None,
+        head_lane_hits=0,
+        head_lane_sign_normal=True,
+        head_center_line_valid=False,
         inside_stairs=False,
         inside_feet_point=None,
         ankle_valid_count=0,
@@ -425,6 +488,14 @@ class ResultBuilderMixin:
         left_foot_in=False,
         right_foot_in=False,
         valid_foot_count=0,
+        head_zone_enabled=False,
+        upper_point=None,
+        upper_point_source="NA",
+        upper_point_in_head_zone=False,
+        upper_body_in_head_zone=False,
+        head_zone_hits=0,
+        track_zone_state="UNKNOWN",
+        ever_confirmed_inside=False,
         inside_raw_by_feet=None,
         inside_reason="UNKNOWN",
         inside_grace_left=0,
@@ -550,8 +621,16 @@ class ResultBuilderMixin:
             "wrong_lane": wrong_lane,
             "lane_status": lane_status,
             "lane_reason": lane_reason,
+            "lane_source": lane_source,
             "lane_direction": lane_direction,
             "p_lane_source": p_lane_source,
+            "lane_missing_feet_grace_left": lane_missing_feet_grace_left,
+            "foot_lane_side": foot_lane_side,
+            "head_lane_side": head_lane_side,
+            "head_lane_raw": head_lane_raw,
+            "head_lane_hits": head_lane_hits,
+            "head_lane_sign_normal": head_lane_sign_normal,
+            "head_center_line_valid": head_center_line_valid,
             "inside_stairs": inside_stairs,
             "inside_feet_point": inside_feet_point,
             "ankle_valid_count": ankle_valid_count,
@@ -561,6 +640,14 @@ class ResultBuilderMixin:
             "left_foot_in": left_foot_in,
             "right_foot_in": right_foot_in,
             "valid_foot_count": valid_foot_count,
+            "head_zone_enabled": head_zone_enabled,
+            "upper_point": upper_point,
+            "upper_point_source": upper_point_source,
+            "upper_point_in_head_zone": upper_point_in_head_zone,
+            "upper_body_in_head_zone": upper_body_in_head_zone,
+            "head_zone_hits": head_zone_hits,
+            "track_zone_state": track_zone_state,
+            "ever_confirmed_inside": ever_confirmed_inside,
             "inside_raw_by_feet": inside_raw_by_feet,
             "inside_reason": inside_reason,
             "inside_grace_left": inside_grace_left,
