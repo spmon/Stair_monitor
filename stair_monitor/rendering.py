@@ -39,6 +39,47 @@ FONT_CANDIDATES = {
 DEMO_ALERT_PADDING_X = 28
 DEMO_ALERT_PADDING_Y = 18
 DEMO_ALERT_LINE_GAP = 10
+LANE_SUPPRESSED_WARNING_LABELS = ("Khong Vin", "Vin Sai Ben")
+LANE_SUPPRESSED_HOLD_DEBUG_PREFIXES = (
+    "BEST_WRIST:",
+    "BEST_WRIST_CORRECT:",
+    "BEST_WRIST_WRONG:",
+    "D:",
+    "D_CORRECT:",
+    "SEG_D_CORRECT:",
+    "T_CORRECT:",
+    "D_WRONG:",
+    "SEG_D_WRONG:",
+    "T_WRONG:",
+    "W_SIDE:",
+    "W_SIDE_CORRECT:",
+    "W_SIDE_WRONG:",
+    "CORRECT_LINE:",
+    "CORRECT_RULE:",
+    "WRONG_LINE:",
+    "WRONG_RULE:",
+    "HOLD_CORRECT_RAW:",
+    "HOLD_WRONG_RAW:",
+    "HOLD_RAW:",
+    "HOLD_RAW_STATUS:",
+    "HOLD:",
+    "HOLD_FINAL_STATUS:",
+    "HOLD_CORRECT_HITS:",
+    "HOLD_WRONG_HITS:",
+    "HOLD_NONE_HITS:",
+    "HOLD_UNKNOWN_HITS:",
+    "HOLD_NOT_HOLD_EVIDENCE_HITS:",
+    "NOT_HOLD_BY_EVIDENCE:",
+    "HOLD_CONF:",
+    "L_CLAIM:",
+    "R_CLAIM:",
+    "L_HOLD_CLAIM_HITS:",
+    "R_HOLD_CLAIM_HITS:",
+    "L_HOLD_RAW_B:",
+    "R_HOLD_RAW_B:",
+    "L_HOLD_RAW_A:",
+    "R_HOLD_RAW_A:",
+)
 DEMO_ALERT_CORNER_RADIUS = 12
 DEMO_ALERT_BOTTOM_MARGIN = 30
 
@@ -419,6 +460,22 @@ def draw_scene_guides(frame, config, analyzer):
         cv2.polylines(
             frame, [analyzer.stairs_poly.reshape((-1, 1, 2))], True, (255, 0, 0), 2
         )
+    if len(analyzer.head_zone_poly) > 2:
+        cv2.polylines(
+            frame,
+            [analyzer.head_zone_poly.reshape((-1, 1, 2))],
+            True,
+            (0, 255, 128),
+            2,
+        )
+    if len(analyzer.head_center_line) >= 2:
+        cv2.line(
+            frame,
+            tuple(analyzer.head_center_line[0]),
+            tuple(analyzer.head_center_line[1]),
+            (255, 128, 0),
+            2,
+        )
 
     if len(analyzer.left_line) >= 2:
         cv2.line(
@@ -490,6 +547,9 @@ def draw_person_overlay(
     if keypoints is not None and DRAW_KEYPOINTS:
         cv2.circle(frame, lane_point, 6, (0, 0, 255), -1)
         cv2.circle(frame, motion_point, 6, (255, 0, 0), -1)
+        upper_point = analysis.get("upper_point")
+        if upper_point is not None:
+            cv2.circle(frame, upper_point, 6, (0, 255, 255), -1)
 
     # Skeleton nay chi de quan sat pose tay, khong lam thay doi ket qua phan tich.
     if keypoints is not None and DRAW_SKELETON:
@@ -523,7 +583,11 @@ def draw_person_overlay(
             cv2.circle(frame, p_e, 4, (0, 255, 255), -1)
             cv2.circle(frame, p_w, 4, (0, 255, 255), -1)
 
-    if DRAW_KEYPOINTS and analysis.get("best_wrist_point") is not None:
+    if (
+        DRAW_KEYPOINTS
+        and not analysis.get("wrong_lane", False)
+        and analysis.get("best_wrist_point") is not None
+    ):
         cv2.circle(frame, analysis["best_wrist_point"], 8, (0, 255, 255), -1)
 
     # Debug overlay can flag bat/tat vi ve nhieu text se anh huong FPS demo.
@@ -626,7 +690,7 @@ def draw_demo_violation_panel(frame, current_violation_counts, text_drawer=None)
         return
 
     frame_h, frame_w = frame.shape[:2]
-    font_size = 60 if frame_w >= 1600 else 51 if frame_w >= 1200 else 42
+    font_size = 80 if frame_w >= 1600 else 51 if frame_w >= 1200 else 42
     alpha = 0.9
     badge_gap = DEMO_ALERT_LINE_GAP
 
@@ -772,7 +836,7 @@ def draw_violation_summary(
 
 def build_debug_lines(analysis):
     analysis = analysis.get("debug_info") or analysis
-    return [
+    debug_lines = [
         f"BEST_WRIST:{analysis.get('best_wrist', 'NONE')}",
         f"BEST_WRIST_CORRECT:{analysis.get('best_wrist_correct', 'NONE')}",
         f"BEST_WRIST_WRONG:{analysis.get('best_wrist_wrong', 'NONE')}",
@@ -818,11 +882,15 @@ def build_debug_lines(analysis):
         f"LEFT_FOOT_IN:{analysis.get('left_foot_in', False)}",
         f"RIGHT_FOOT_IN:{analysis.get('right_foot_in', False)}",
         f"VALID_FOOT_COUNT:{analysis.get('valid_foot_count', 0)}",
+        f"HEAD_ZONE_ENABLED:{analysis.get('head_zone_enabled', False)}",
         f"INSIDE_RAW_BY_FEET:{analysis.get('inside_raw_by_feet')}"
         if analysis.get("inside_raw_by_feet") is not None
         else "INSIDE_RAW_BY_FEET:NA",
         f"INSIDE_REASON:{analysis.get('inside_reason', 'UNKNOWN')}",
         f"INSIDE_GRACE_LEFT:{analysis.get('inside_grace_left', 0)}",
+        f"TRACK_ZONE_STATE:{analysis.get('track_zone_state', 'UNKNOWN')}",
+        f"EVER_CONFIRMED_INSIDE:{analysis.get('ever_confirmed_inside', False)}",
+        f"HEAD_ZONE_HITS:{analysis.get('head_zone_hits', 0)}",
         f"INSIDE_FEET:{analysis['inside_feet_point'][0]},{analysis['inside_feet_point'][1]}"
         if analysis.get("inside_feet_point") is not None
         else "INSIDE_FEET:NA",
@@ -830,8 +898,25 @@ def build_debug_lines(analysis):
         f"LANE_HITS:{analysis.get('lane_hits', 0)}",
         f"LANE_CONF:{analysis.get('lane_conf', False)}",
         f"LANE_DIRECTION:{analysis.get('lane_direction', 'ANALYZING')}",
+        f"LANE_SOURCE:{analysis.get('lane_source', 'NO_LANE')}",
         f"LANE_REASON:{analysis.get('lane_reason', 'NA')}",
         f"P_LANE_SOURCE:{analysis.get('p_lane_source', 'NONE')}",
+        f"FOOT_LANE_SIDE:{int(analysis['foot_lane_side'])}"
+        if analysis.get("foot_lane_side") is not None
+        else "FOOT_LANE_SIDE:NA",
+        f"HEAD_LANE_SIDE:{int(analysis['head_lane_side'])}"
+        if analysis.get("head_lane_side") is not None
+        else "HEAD_LANE_SIDE:NA",
+        f"HEAD_LANE_RAW:{analysis.get('head_lane_raw')}"
+        if analysis.get("head_lane_raw") is not None
+        else "HEAD_LANE_RAW:NA",
+        f"HEAD_LANE_HITS:{analysis.get('head_lane_hits', 0)}",
+        f"HEAD_LANE_SIGN_NORMAL:{analysis.get('head_lane_sign_normal', True)}",
+        f"HEAD_CENTER_LINE_VALID:{analysis.get('head_center_line_valid', False)}",
+        f"LANE_MISSING_FEET_GRACE_LEFT:{analysis.get('lane_missing_feet_grace_left', 0)}",
+        f"UPPER_POINT_SOURCE:{analysis.get('upper_point_source', 'NA')}",
+        f"UPPER_POINT_IN_HEAD_ZONE:{analysis.get('upper_point_in_head_zone', False)}",
+        f"UPPER_BODY_IN_HEAD_ZONE:{analysis.get('upper_body_in_head_zone', False)}",
         f"BODY_FACING:{analysis.get('body_facing', 'UNKNOWN')}",
         f"BODY_FACING_CONF:{analysis.get('body_facing_confidence', 0.0):.2f}",
         f"BODY_FACING_EVIDENCE_COUNT:{analysis.get('body_facing_evidence_count', 0)}",
@@ -945,7 +1030,31 @@ def build_debug_lines(analysis):
         f"P_LANE:{analysis['p_lane'][0]},{analysis['p_lane'][1]}"
         if analysis.get("p_lane") is not None
         else "P_LANE:NA",
+        f"UPPER_POINT_X:{analysis['upper_point'][0]}"
+        if analysis.get("upper_point") is not None
+        else "UPPER_POINT_X:NA",
+        f"UPPER_POINT_Y:{analysis['upper_point'][1]}"
+        if analysis.get("upper_point") is not None
+        else "UPPER_POINT_Y:NA",
+        f"UPPER_POINT:{analysis['upper_point'][0]},{analysis['upper_point'][1]}"
+        if analysis.get("upper_point") is not None
+        else "UPPER_POINT:NA",
         f"MOTION:{analysis['p_motion'][0]},{analysis['p_motion'][1]}"
         if analysis.get("p_motion") is not None
         else "MOTION:NA",
     ]
+    if not analysis.get("wrong_lane", False):
+        return debug_lines
+
+    filtered_lines = [
+        line
+        for line in debug_lines
+        if not line.startswith(LANE_SUPPRESSED_HOLD_DEBUG_PREFIXES)
+    ]
+    filtered_lines.extend(
+        [
+            "LANE_SUPPRESS_HOLD_DISPLAY:True",
+            "SUPPRESSED_WARNINGS:" + ",".join(LANE_SUPPRESSED_WARNING_LABELS),
+        ]
+    )
+    return filtered_lines

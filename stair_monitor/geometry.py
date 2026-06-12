@@ -334,6 +334,11 @@ def _get_torso_box_from_features(features, margin_x=40, margin_y=40, margin_bott
 def extract_pose_features(keypoints, bbox):
     bbox_tuple = tuple(int(value) for value in bbox) if bbox is not None else None
 
+    nose = _get_keypoint_point(keypoints, 0)
+    left_eye = _get_keypoint_point(keypoints, 1)
+    right_eye = _get_keypoint_point(keypoints, 2)
+    left_ear = _get_keypoint_point(keypoints, 3)
+    right_ear = _get_keypoint_point(keypoints, 4)
     left_wrist = _get_keypoint_point(keypoints, 9)
     right_wrist = _get_keypoint_point(keypoints, 10)
     left_elbow = _get_keypoint_point(keypoints, 7)
@@ -359,6 +364,7 @@ def extract_pose_features(keypoints, bbox):
 
     hip_center = _midpoint(left_hip, right_hip)
     shoulder_center = _midpoint(left_shoulder, right_shoulder)
+    head_center = _average_points([nose, left_eye, right_eye, left_ear, right_ear])
     body_facing_evidence = compute_body_facing_evidence(keypoints)
 
     ankle_valid_count = int(left_ankle is not None) + int(right_ankle is not None)
@@ -376,11 +382,35 @@ def extract_pose_features(keypoints, bbox):
     # motion_point dai dien cho chuyen dong tong the cua nguoi.
     # Khong uu tien chan vi chan de nhieu khi pose rung hoac buoc buoc tren cau thang.
     motion_point = hip_center or bbox_center or bbox_bottom_center
+    bbox_upper_center = None
+    if bbox_tuple is not None and len(bbox_tuple) >= 4:
+        bbox_upper_center = (
+            int((bbox_tuple[0] + bbox_tuple[2]) / 2),
+            int(bbox_tuple[1] + 0.25 * (bbox_tuple[3] - bbox_tuple[1])),
+        )
+
+    upper_point = None
+    upper_point_source = "NA"
+    if head_center is not None:
+        upper_point = head_center
+        upper_point_source = "HEAD_CENTER"
+    elif shoulder_center is not None:
+        upper_point = shoulder_center
+        upper_point_source = "SHOULDER_CENTER"
+    elif bbox_upper_center is not None:
+        upper_point = bbox_upper_center
+        upper_point_source = "BBOX_UPPER_CENTER"
 
     features = {
         "bbox": bbox_tuple,
         "bbox_center": bbox_center,
         "bbox_bottom_center": bbox_bottom_center,
+        "bbox_upper_center": bbox_upper_center,
+        "nose": nose,
+        "left_eye": left_eye,
+        "right_eye": right_eye,
+        "left_ear": left_ear,
+        "right_ear": right_ear,
         "left_wrist": left_wrist,
         "right_wrist": right_wrist,
         "left_elbow": left_elbow,
@@ -392,10 +422,13 @@ def extract_pose_features(keypoints, bbox):
         "left_ankle": left_ankle,
         "right_ankle": right_ankle,
         "hip_center": hip_center,
+        "head_center": head_center,
         "shoulder_center": shoulder_center,
         "motion_point": motion_point,
         "feet_point": feet_point,
         "inside_feet_point": inside_feet_point,
+        "upper_point": upper_point,
+        "upper_point_source": upper_point_source,
         "ankle_valid_count": ankle_valid_count,
         "feet_reliable": feet_reliable,
         "left_arm_angle": _calculate_arm_angle_from_points(
@@ -426,11 +459,11 @@ def extract_pose_features(keypoints, bbox):
         "head_valid": body_facing_evidence["head_valid"],
         "arm_side_order": estimate_arm_side_order(keypoints),
         "keypoint_valid": {
-            "nose": _get_keypoint_point(keypoints, 0) is not None,
-            "left_eye": _get_keypoint_point(keypoints, 1) is not None,
-            "right_eye": _get_keypoint_point(keypoints, 2) is not None,
-            "left_ear": _get_keypoint_point(keypoints, 3) is not None,
-            "right_ear": _get_keypoint_point(keypoints, 4) is not None,
+            "nose": nose is not None,
+            "left_eye": left_eye is not None,
+            "right_eye": right_eye is not None,
+            "left_ear": left_ear is not None,
+            "right_ear": right_ear is not None,
             "left_wrist": left_wrist is not None,
             "right_wrist": right_wrist is not None,
             "left_elbow": left_elbow is not None,
