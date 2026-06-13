@@ -4,13 +4,10 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from stair_monitor.geometry import extract_pose_features
 from stair_monitor.settings import (
     DEMO_MODE,
-    DRAW_DEBUG_DETAIL,
-    DRAW_KEYPOINTS,
-    DRAW_SKELETON,
     ENABLE_DEBUG_OVERLAY,
+    ENABLE_SKELETON_DRAW,
     ENABLE_SUMMARY_PANEL,
     ENABLE_VERBOSE_PERSON_DEBUG,
     ENABLE_VIETNAMESE_TEXT,
@@ -323,39 +320,6 @@ class VietnameseTextDrawer:
         return panel_width, panel_height
 
 
-# Ham boc de ve 1 dong text tieng Viet tren frame.
-def draw_vietnamese_text(
-    frame,
-    text,
-    position,
-    font_size=28,
-    color=(255, 255, 255),
-    bold=False,
-    text_drawer=None,
-):
-    if not text:
-        return
-
-    if text_drawer is not None:
-        text_drawer.text(
-            text,
-            position,
-            font_size=font_size,
-            color=color,
-            bold=bold,
-        )
-        return
-
-    with VietnameseTextDrawer(frame) as drawer:
-        drawer.text(
-            text,
-            position,
-            font_size=font_size,
-            color=color,
-            bold=bold,
-        )
-
-
 # Ve panel nen trong suot + text tieng Viet.
 def draw_transparent_panel_with_vietnamese_text(
     frame,
@@ -495,18 +459,6 @@ def draw_scene_guides(frame, config, analyzer):
         )
 
 
-# Lay lai feet_point da chuan hoa tu pose feature.
-def get_feet_point(box, keypoints):
-    features = extract_pose_features(keypoints, box)
-    return features.get("feet_point")
-
-
-# Lay lai motion_point da chuan hoa tu pose feature.
-def get_motion_point(box, keypoints):
-    features = extract_pose_features(keypoints, box)
-    return features.get("motion_point")
-
-
 # Ve overlay cho tung nguoi sau khi analyzer da tra ket qua.
 # Ham nay chi hien thi demo, khong duoc can du vao logic nhan dien.
 def draw_person_overlay(
@@ -544,7 +496,7 @@ def draw_person_overlay(
     # Ve 2 diem dai dien de tranh nham:
     # - lane_point cho sai lan
     # - motion_point cho direction/backward/standing
-    if keypoints is not None and DRAW_KEYPOINTS:
+    if keypoints is not None and ENABLE_DEBUG_OVERLAY:
         cv2.circle(frame, lane_point, 6, (0, 0, 255), -1)
         cv2.circle(frame, motion_point, 6, (255, 0, 0), -1)
         upper_point = analysis.get("upper_point")
@@ -552,7 +504,7 @@ def draw_person_overlay(
             cv2.circle(frame, upper_point, 6, (0, 255, 255), -1)
 
     # Skeleton nay chi de quan sat pose tay, khong lam thay doi ket qua phan tich.
-    if keypoints is not None and DRAW_SKELETON:
+    if keypoints is not None and ENABLE_SKELETON_DRAW:
         if (
             len(keypoints) > 9
             and keypoints[5][2] > 0.5
@@ -584,7 +536,7 @@ def draw_person_overlay(
             cv2.circle(frame, p_w, 4, (0, 255, 255), -1)
 
     if (
-        DRAW_KEYPOINTS
+        ENABLE_DEBUG_OVERLAY
         and not analysis.get("wrong_lane", False)
         and analysis.get("best_wrist_point") is not None
     ):
@@ -641,29 +593,6 @@ def draw_person_overlay(
                 (0, 255, 255),
                 debug_thickness,
             )
-
-
-# Ve panel tong so nguoi dang nam trong vung cau thang.
-def draw_people_count(frame, current_inside_count, text_drawer=None):
-    if not ENABLE_SUMMARY_PANEL:
-        return
-
-    if DEMO_MODE and not ENABLE_DEBUG_OVERLAY:
-        return
-
-    draw_transparent_panel_with_vietnamese_text(
-        frame,
-        20,
-        20,
-        [
-            "ĐANG TRONG VÙNG",
-            f"Người trong vùng: {current_inside_count}",
-        ],
-        alpha=0.45,
-        font_size=24,
-        panel_color=(44, 56, 82),
-        text_drawer=text_drawer,
-    )
 
 
 # Tao danh sach dong text cho panel thong ke.
@@ -873,6 +802,46 @@ def build_debug_lines(analysis):
         if analysis.get("lane_v") is not None
         else "LANE_V:NA",
         f"DIR:{analysis.get('direction', 'NA')}",
+        f"DIRECTION_RAW:{analysis.get('direction_raw', 'ANALYZING')}",
+        f"DIRECTION_FINAL:{analysis.get('direction_final', 'ANALYZING')}",
+        f"LAST_VALID_DIRECTION:{analysis.get('last_valid_direction') or 'NA'}",
+        f"DIRECTION_REASON:{analysis.get('direction_reason', 'UNKNOWN')}",
+        f"USE_DIRECTION_AXIS:{analysis.get('use_direction_axis', False)}",
+        f"DOWN_Y_INCREASES:{analysis.get('down_y_increases', True)}",
+        f"DIRECTION_AXIS_FAR_TO_NEAR_IS_DOWN:{analysis.get('direction_axis_far_to_near_is_down', True)}",
+        f"STAIR_DIRECTION_AXIS_VALID:{analysis.get('stair_direction_axis_valid', False)}",
+        f"P_MOTION_SOURCE:{analysis.get('p_motion_source', 'NA')}",
+        f"P_MOTION_X:{int(analysis['p_motion_x'])}"
+        if analysis.get("p_motion_x") is not None
+        else "P_MOTION_X:NA",
+        f"P_MOTION_Y:{int(analysis['p_motion_y'])}"
+        if analysis.get("p_motion_y") is not None
+        else "P_MOTION_Y:NA",
+        f"DIRECTION_Y_START:{int(analysis['direction_y_start'])}"
+        if analysis.get("direction_y_start") is not None
+        else "DIRECTION_Y_START:NA",
+        f"DIRECTION_Y_NOW:{int(analysis['direction_y_now'])}"
+        if analysis.get("direction_y_now") is not None
+        else "DIRECTION_Y_NOW:NA",
+        f"DIRECTION_DY:{int(analysis['direction_dy'])}"
+        if analysis.get("direction_dy") is not None
+        else "DIRECTION_DY:NA",
+        f"DIRECTION_AXIS_S_CURRENT:{analysis['direction_axis_s_current']:.2f}"
+        if analysis.get("direction_axis_s_current") is not None
+        else "DIRECTION_AXIS_S_CURRENT:NA",
+        f"DIRECTION_AXIS_S_START:{analysis['direction_axis_s_start']:.2f}"
+        if analysis.get("direction_axis_s_start") is not None
+        else "DIRECTION_AXIS_S_START:NA",
+        f"DIRECTION_AXIS_DELTA:{analysis['direction_axis_delta']:.2f}"
+        if analysis.get("direction_axis_delta") is not None
+        else "DIRECTION_AXIS_DELTA:NA",
+        f"MOTION_AXIS:{analysis.get('motion_axis', 'UNKNOWN')}",
+        f"DIRECTION_FLIP_CANDIDATE:{analysis.get('direction_flip_candidate', 'NONE')}",
+        f"DIRECTION_FLIP_HITS:{analysis.get('direction_flip_hits', 0)}",
+        f"DIRECTION_FLIP_ALLOWED:{analysis.get('direction_flip_allowed', False)}",
+        f"DIR_DISPLAY:{analysis.get('dir_display', 'ANALYZING')}",
+        f"DIR_USED_FOR_HOLD:{analysis.get('dir_used_for_hold') or 'NA'}",
+        f"HOLD_DIRECTION_SOURCE:{analysis.get('hold_direction_source', 'NONE')}",
         f"INSIDE_STAIRS:{analysis.get('inside_stairs', False)}",
         f"INSIDE_FINAL:{analysis.get('inside_stairs', False)}",
         f"FEET_RELIABLE:{analysis.get('feet_reliable', False)}",

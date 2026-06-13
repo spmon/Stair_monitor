@@ -15,13 +15,13 @@ from stair_monitor.rendering import (
 from stair_monitor.settings import (
     DEMO_ALERT_HOLD_SECONDS,
     DEMO_MODE,
-    DRAW_DEBUG,
+    ENABLE_DEBUG_OVERLAY,
     ENABLE_PERF_LOG,
+    ENABLE_SUMMARY_PANEL,
     PERF_LOG_INTERVAL,
     SAVE_MODEL_INPUT_DEBUG,
     SAVE_MODEL_INPUT_DEBUG_EVERY,
     SAVE_OUTPUT_VIDEO,
-    SHOW_PEOPLE_COUNT,
     VIOLATION_COUNT_LABELS,
     VIDEO_INPUT_PATH,
     VIDEO_OUTPUT_PATH,
@@ -206,7 +206,7 @@ def process_video():
         # Gom toan bo thao tac ve overlay vao 1 context de giu tieng Viet co dau.
         with VietnameseTextDrawer(overlay_frame) as text_drawer:
             overlay_start = time.perf_counter() if ENABLE_PERF_LOG else None
-            if DRAW_DEBUG and not DEMO_MODE:
+            if ENABLE_DEBUG_OVERLAY and not DEMO_MODE:
                 draw_scene_guides(overlay_frame, CONFIG, analyzer)
 
             if results[0].boxes.id is not None:
@@ -282,14 +282,14 @@ def process_video():
                 for label, track_ids in total_violation_by_type.items()
             }
             demo_violation_counts = current_violation_counts
-            if DEMO_MODE and SHOW_PEOPLE_COUNT:
+            if DEMO_MODE and ENABLE_SUMMARY_PANEL:
                 demo_violation_counts = _build_demo_alert_display_counts(
                     time.time(),
                     active_violations,
                     demo_alert_last_seen,
                 )
 
-            if SHOW_PEOPLE_COUNT:
+            if ENABLE_SUMMARY_PANEL:
                 # Ve panel tong hop len video.
                 summary_start = time.perf_counter() if ENABLE_PERF_LOG else None
                 draw_violation_summary(

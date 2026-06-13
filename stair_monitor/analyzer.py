@@ -16,17 +16,20 @@ from stair_monitor.settings import (
     ANALYZING_COLOR,
     BACKWARD_MIN_VALID_EVIDENCE,
     DEMO_MODE,
+    DOWN_Y_INCREASES,
+    DIRECTION_AXIS_FAR_TO_NEAR_IS_DOWN,
+    DIRECTION_FLIP_CONFIRM_FRAMES,
+    DIRECTION_FLIP_MIN_DELTA,
+    DIRECTION_KEEP_LAST_WHEN_UNSTABLE_FRAMES,
     DIRECTION_HISTORY_LEN,
     DIRECTION_MIN_FRAMES,
     DIRECTION_PIXEL_THRESHOLD,
-    DIRECTION_SIGN_NORMAL,
     ENABLE_HEAD_ZONE,
     ENABLE_HEAD_LANE_FALLBACK,
     ENABLE_PERF_LOG,
     HEAD_ZONE_CONFIRM_FRAMES,
     HEAD_ZONE_GRACE_FRAMES,
     HEAD_LANE_SIGN_NORMAL,
-    INSIDE_STAIRS_GRACE_FRAMES,
     LANE_MISSING_FEET_GRACE_FRAMES,
     LANE_SIGN_NORMAL,
     OUTSIDE_COLOR,
@@ -34,6 +37,7 @@ from stair_monitor.settings import (
     STAIRS_LEFT_EXPAND_BOTTOM_PX,
     STAIRS_LEFT_EXPAND_TOP_PX,
     UNKNOWN_COLOR,
+    USE_DIRECTION_AXIS,
 )
 
 HAND_CLAIM_HOLD_HITS = 4
@@ -80,13 +84,27 @@ class BehaviorAnalyzer(
             [bottom_left, bottom_right, top_right, top_left], np.int32
         )
         self.head_zone_poly = np.array(config.get("HEAD_ZONE_POLY", []), np.int32)
+        self.use_direction_axis = bool(USE_DIRECTION_AXIS)
+        self.down_y_increases = bool(DOWN_Y_INCREASES)
+        self.direction_axis_far_to_near_is_down = bool(
+            DIRECTION_AXIS_FAR_TO_NEAR_IS_DOWN
+        )
+        self.stair_direction_axis = config.get("STAIR_DIRECTION_AXIS", [])
+        (
+            self.direction_axis_start,
+            self.direction_axis_end,
+            self.direction_axis_valid,
+        ) = self._load_direction_axis(self.stair_direction_axis)
         self.track_history = {}
+        self.direction_axis_history = {}
+        self.direction_flip_state = {}
         self.lane_history = {}
         self.head_lane_history = {}
         self.lane_last_state = {}
         self.lane_last_seen = {}
         self.hold_status_history = {}
         self.last_valid_direction = {}
+        self.last_valid_direction_frame = {}
         self.hand_claim_state = {}
         self.front_carry_history = {}
         self.front_carry_one_arm_history = {}
@@ -101,6 +119,240 @@ class BehaviorAnalyzer(
     def begin_frame(self):
         # Gia tri nay chi tang 1 lan cho moi frame video de cac grace history khop theo frame.
         self.frame_index += 1
+
+    @staticmethod
+    def _normalize_axis_point(point):
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            return None
+        return (int(point[0]), int(point[1]))
+
+    @classmethod
+    def _load_direction_axis(cls, raw_axis):
+        if not isinstance(raw_axis, list) or len(raw_axis) < 2:
+            return None, None, False
+
+        axis_start = cls._normalize_axis_point(raw_axis[0])
+        axis_end = cls._normalize_axis_point(raw_axis[1])
+        if axis_start is None or axis_end is None or axis_start == axis_end:
+            return None, None, False
+        return axis_start, axis_end, True
+
+    @staticmethod
+    def project_point_to_axis_scalar(point, axis_start, axis_end):
+        if point is None or axis_start is None or axis_end is None:
+            return None
+
+        axis_vec = np.array(
+            [axis_end[0] - axis_start[0], axis_end[1] - axis_start[1]],
+            dtype=np.float32,
+        )
+        axis_norm = float(np.linalg.norm(axis_vec))
+        if axis_norm <= 1e-6:
+            return None
+
+        axis_unit = axis_vec / axis_norm
+        point_vec = np.array(
+            [point[0] - axis_start[0], point[1] - axis_start[1]],
+            dtype=np.float32,
+        )
+        return float(np.dot(point_vec, axis_unit))
+
+    @staticmethod
+    def _is_weak_motion_source(p_motion_source):
+        return p_motion_source in {
+            "BBOX_CENTER_FALLBACK",
+            "BBOX_UPPER_CENTER_FALLBACK",
+        }
+
+    def _get_recent_last_valid_direction(self, track_id):
+        last_direction = self.last_valid_direction.get(track_id)
+        last_frame = self.last_valid_direction_frame.get(track_id)
+        if last_direction not in ("UP", "DOWN") or last_frame is None:
+            return None
+
+        if self.frame_index - last_frame > DIRECTION_KEEP_LAST_WHEN_UNSTABLE_FRAMES:
+            return None
+        return last_direction
+
+    def _update_last_valid_direction_from_evidence(
+        self, track_id, direction_raw, direction_final
+    ):
+        if direction_final not in ("UP", "DOWN"):
+            return
+        if direction_raw not in ("UP", "DOWN"):
+            return
+        if direction_raw != direction_final:
+            return
+
+        self.last_valid_direction[track_id] = direction_final
+        self.last_valid_direction_frame[track_id] = self.frame_index
+
+    def _get_direction_history(self, track_id):
+        if track_id not in self.track_history:
+            self.track_history[track_id] = []
+        if track_id not in self.direction_axis_history:
+            self.direction_axis_history[track_id] = []
+        if track_id not in self.direction_flip_state:
+            self.direction_flip_state[track_id] = {"candidate": None, "hits": 0}
+        return (
+            self.track_history[track_id],
+            self.direction_axis_history[track_id],
+            self.direction_flip_state[track_id],
+        )
+
+    def _compute_direction_from_dy_history(self, y_history):
+        y_start = int(y_history[0]) if y_history else None
+        y_now = int(y_history[-1]) if y_history else None
+        dy = (y_now - y_start) if len(y_history) >= 2 else None
+
+        if len(y_history) < DIRECTION_MIN_FRAMES:
+            return "ANALYZING", y_start, y_now, dy, "NOT_ENOUGH_HISTORY"
+
+        if dy is None:
+            return "ANALYZING", y_start, y_now, dy, "NOT_ENOUGH_HISTORY"
+
+        if dy > DIRECTION_PIXEL_THRESHOLD:
+            if self.down_y_increases:
+                return "DOWN", y_start, y_now, dy, "Y_INCREASE_DOWN"
+            return "UP", y_start, y_now, dy, "Y_INCREASE_UP"
+
+        if dy < -DIRECTION_PIXEL_THRESHOLD:
+            if self.down_y_increases:
+                return "UP", y_start, y_now, dy, "Y_DECREASE_UP"
+            return "DOWN", y_start, y_now, dy, "Y_DECREASE_DOWN"
+
+        return "IDLE", y_start, y_now, dy, "Y_DELTA_NOT_ENOUGH"
+
+    def _evaluate_direction(
+        self,
+        track_id,
+        p_motion,
+        p_motion_source,
+        inside_stairs,
+    ):
+        y_history, axis_history, flip_state = self._get_direction_history(track_id)
+        _ = axis_history
+        if p_motion is not None:
+            y_history.append(int(p_motion[1]))
+            y_history[:] = y_history[-DIRECTION_HISTORY_LEN:]
+
+        direction_y_start = int(y_history[0]) if y_history else None
+        direction_y_now = int(y_history[-1]) if y_history else None
+        dy = None
+        direction_raw = "ANALYZING"
+        direction_final = "ANALYZING"
+        direction_reason = "NOT_ENOUGH_HISTORY"
+        direction_axis_s_current = None
+        direction_axis_s_start = None
+        direction_axis_delta = None
+        motion_axis = "NO_MOTION_POINT"
+        direction_flip_allowed = False
+        direction_flip_candidate = flip_state.get("candidate") or "NONE"
+        direction_flip_hits = int(flip_state.get("hits", 0) or 0)
+
+        weak_motion_source = self._is_weak_motion_source(p_motion_source)
+        last_valid_direction_recent = self._get_recent_last_valid_direction(track_id)
+        last_valid_direction_any = self.last_valid_direction.get(track_id)
+        (
+            direction_raw,
+            direction_y_start,
+            direction_y_now,
+            dy,
+            direction_reason,
+        ) = self._compute_direction_from_dy_history(y_history)
+        if len(y_history) >= DIRECTION_MIN_FRAMES:
+            motion_axis = "Y_IMAGE_DELTA"
+        elif y_history:
+            motion_axis = "Y_IMAGE_WAIT_HISTORY"
+
+        raw_delta_abs = abs(dy) if dy is not None else 0.0
+
+        if direction_raw in ("UP", "DOWN"):
+            if (
+                last_valid_direction_any in ("UP", "DOWN")
+                and direction_raw != last_valid_direction_any
+            ):
+                if flip_state.get("candidate") == direction_raw:
+                    flip_state["hits"] = int(flip_state.get("hits", 0)) + 1
+                else:
+                    flip_state["candidate"] = direction_raw
+                    flip_state["hits"] = 1
+
+                direction_flip_candidate = flip_state.get("candidate") or "NONE"
+                direction_flip_hits = int(flip_state.get("hits", 0) or 0)
+
+                if weak_motion_source:
+                    direction_final = last_valid_direction_any
+                    direction_reason = "KEEP_LAST_DIRECTION_FLIP_GUARD"
+                else:
+                    direction_flip_allowed = (
+                        direction_flip_hits >= DIRECTION_FLIP_CONFIRM_FRAMES
+                        and raw_delta_abs >= DIRECTION_FLIP_MIN_DELTA
+                    )
+                    if direction_flip_allowed:
+                        direction_final = direction_raw
+                        direction_reason = "FLIP_CONFIRMED"
+                        flip_state["candidate"] = None
+                        flip_state["hits"] = 0
+                    else:
+                        direction_final = last_valid_direction_any
+                        direction_reason = "KEEP_LAST_DIRECTION_FLIP_GUARD"
+            else:
+                direction_final = direction_raw
+                flip_state["candidate"] = None
+                flip_state["hits"] = 0
+        else:
+            flip_state["candidate"] = None
+            flip_state["hits"] = 0
+            if inside_stairs and last_valid_direction_recent in ("UP", "DOWN"):
+                direction_final = last_valid_direction_recent
+                direction_reason = "KEEP_LAST_DIRECTION_UNSTABLE"
+            else:
+                direction_final = direction_raw
+
+        direction_flip_candidate = flip_state.get("candidate") or "NONE"
+        direction_flip_hits = int(flip_state.get("hits", 0) or 0)
+        self._update_last_valid_direction_from_evidence(
+            track_id,
+            direction_raw,
+            direction_final,
+        )
+        last_valid_direction = self.last_valid_direction.get(track_id)
+
+        dir_display = direction_final
+        dir_used_for_hold = None
+        hold_direction_source = "NONE"
+        if direction_final in ("UP", "DOWN"):
+            dir_used_for_hold = direction_final
+            hold_direction_source = (
+                "LAST_VALID_DIRECTION"
+                if direction_final != direction_raw
+                else "CURRENT_DIRECTION"
+            )
+        elif inside_stairs and last_valid_direction_recent in ("UP", "DOWN"):
+            dir_used_for_hold = last_valid_direction_recent
+            hold_direction_source = "LAST_VALID_DIRECTION"
+
+        return {
+            "dy": dy,
+            "direction_y_start": direction_y_start,
+            "direction_y_now": direction_y_now,
+            "direction_dy": dy,
+            "direction_raw": direction_raw,
+            "direction_final": direction_final,
+            "direction_reason": direction_reason,
+            "direction_axis_s_current": direction_axis_s_current,
+            "direction_axis_s_start": direction_axis_s_start,
+            "direction_axis_delta": direction_axis_delta,
+            "motion_axis": motion_axis,
+            "direction_flip_candidate": direction_flip_candidate,
+            "direction_flip_hits": direction_flip_hits,
+            "direction_flip_allowed": direction_flip_allowed,
+            "last_valid_direction": last_valid_direction,
+            "dir_display": dir_display,
+            "dir_used_for_hold": dir_used_for_hold,
+            "hold_direction_source": hold_direction_source,
+        }
 
     # Kiem tra p_lane co nam trong polygon cau thang hay khong.
     # Sai lan/hold/standing chi nen duoc ket luan khi nguoi dang o trong vung nay.
@@ -534,6 +786,9 @@ class BehaviorAnalyzer(
             p_lane = features.get("feet_point")
         if p_motion is None:
             p_motion = features.get("motion_point")
+        p_motion_source = features.get("motion_point_source", "NA")
+        p_motion_x = p_motion[0] if p_motion is not None else None
+        p_motion_y = p_motion[1] if p_motion is not None else None
 
         body_facing = features.get("body_facing", "UNKNOWN")
         body_facing_confidence = float(
@@ -556,6 +811,34 @@ class BehaviorAnalyzer(
         arm_side_order = features.get("arm_side_order", "UNKNOWN")
 
         direction = "ANALYZING"
+        direction_raw = "ANALYZING"
+        direction_final = "ANALYZING"
+        direction_reason = "NOT_ENOUGH_HISTORY"
+        use_direction_axis = bool(self.use_direction_axis)
+        down_y_increases = bool(self.down_y_increases)
+        direction_axis_far_to_near_is_down = bool(
+            self.direction_axis_far_to_near_is_down
+        )
+        stair_direction_axis_valid = bool(self.direction_axis_valid)
+        stair_direction_axis = (
+            [self.direction_axis_start, self.direction_axis_end]
+            if self.direction_axis_valid
+            else []
+        )
+        direction_axis_s_current = None
+        direction_axis_s_start = None
+        direction_axis_delta = None
+        motion_axis = "ANALYZING"
+        direction_y_start = None
+        direction_y_now = None
+        direction_dy = None
+        direction_flip_candidate = "NONE"
+        direction_flip_hits = 0
+        direction_flip_allowed = False
+        last_valid_direction = self.last_valid_direction.get(track_id)
+        dir_display = "ANALYZING"
+        dir_used_for_hold = None
+        hold_direction_source = "NONE"
         dy = None
         v = None
         wrong_lane_raw = False
@@ -657,13 +940,6 @@ class BehaviorAnalyzer(
         carry_info = None
         warnings = []
 
-        # Lich su p_motion theo truc y dung de suy ra direction.
-        # p_motion uu tien tam hong thay vi chan de tranh nhieu khi dang buoc tren cau thang.
-        if track_id not in self.track_history:
-            self.track_history[track_id] = []
-        if p_motion is not None:
-            self.track_history[track_id].append(p_motion[1])
-
         # Standing still su dung lich su p_motion va doc lap voi direction.
         # Nguoi chua du dieu kien ket luan UP/DOWN van co the bi bao Dung Yen.
         standing_start = time.perf_counter() if perf is not None else None
@@ -719,9 +995,37 @@ class BehaviorAnalyzer(
                 **overrides,
             )
 
-        # Chua du lich su chuyen dong thi chua duoc ket luan direction.
-        # Giai doan nay van co the thu hold/standing de phuc vu debug/demo, nhung khong duoc ep thanh UP/DOWN.
-        if len(self.track_history[track_id]) < DIRECTION_MIN_FRAMES:
+        direction_start = time.perf_counter() if perf is not None else None
+        direction_info = self._evaluate_direction(
+            track_id=track_id,
+            p_motion=p_motion,
+            p_motion_source=p_motion_source,
+            inside_stairs=inside_stairs,
+        )
+        dy = direction_info["dy"]
+        direction_raw = direction_info["direction_raw"]
+        direction_final = direction_info["direction_final"]
+        direction_reason = direction_info["direction_reason"]
+        direction_y_start = direction_info["direction_y_start"]
+        direction_y_now = direction_info["direction_y_now"]
+        direction_dy = direction_info["direction_dy"]
+        direction_axis_s_current = direction_info["direction_axis_s_current"]
+        direction_axis_s_start = direction_info["direction_axis_s_start"]
+        direction_axis_delta = direction_info["direction_axis_delta"]
+        motion_axis = direction_info["motion_axis"]
+        direction_flip_candidate = direction_info["direction_flip_candidate"]
+        direction_flip_hits = direction_info["direction_flip_hits"]
+        direction_flip_allowed = direction_info["direction_flip_allowed"]
+        last_valid_direction = direction_info["last_valid_direction"]
+        dir_display = direction_info["dir_display"]
+        dir_used_for_hold = direction_info["dir_used_for_hold"]
+        hold_direction_source = direction_info["hold_direction_source"]
+        direction = direction_final
+        self._record_perf(perf, "direction", direction_start)
+
+        # Khi direction chua on dinh thi chua ket luan UP/DOWN,
+        # nhung van co the dung huong gan nhat hop le cho hold neu con moi.
+        if direction == "ANALYZING":
             if not inside_stairs:
                 # Ra khoi vung thi reset history de track cu khong lam ban frame sau.
                 self._reset_behavior_histories(track_id)
@@ -739,8 +1043,7 @@ class BehaviorAnalyzer(
                     color=OUTSIDE_COLOR,
                 )
 
-            # Neu da tung co huong hop le truoc do thi tam thoi muon dung lai huong cu cho hold.
-            hold_direction = self.last_valid_direction.get(track_id)
+            hold_direction = dir_used_for_hold
             hold_start = time.perf_counter() if perf is not None else None
             handrail_evidence = compute_handrail_evidence(
                 features,
@@ -837,29 +1140,6 @@ class BehaviorAnalyzer(
                 color=UNKNOWN_COLOR if DEMO_MODE else ANALYZING_COLOR,
             )
 
-        # Direction dua tren bien dong p_motion theo truc y trong nhieu frame.
-        # dy am/duong phu thuoc goc camera va DIRECTION_SIGN_NORMAL, vi vay khong duoc sua cong thuc nay.
-        # IDLE co nghia la chua du chuyen dong de ket luan UP/DOWN.
-        direction_start = time.perf_counter() if perf is not None else None
-        dy = self.track_history[track_id][-1] - self.track_history[track_id][0]
-        self.track_history[track_id] = self.track_history[track_id][
-            -DIRECTION_HISTORY_LEN:
-        ]
-
-        if DIRECTION_SIGN_NORMAL:
-            direction = (
-                "UP"
-                if dy < -DIRECTION_PIXEL_THRESHOLD
-                else "DOWN" if dy > DIRECTION_PIXEL_THRESHOLD else "IDLE"
-            )
-        else:
-            direction = (
-                "DOWN"
-                if dy < -DIRECTION_PIXEL_THRESHOLD
-                else "UP" if dy > DIRECTION_PIXEL_THRESHOLD else "IDLE"
-            )
-        self._record_perf(perf, "direction", direction_start)
-
         if not inside_stairs:
             # Ngoai vung thi khong ket luan sai lan/hold trong frame nay va xoa history hanh vi.
             self._reset_behavior_histories(track_id)
@@ -905,9 +1185,6 @@ class BehaviorAnalyzer(
                 correct_rule="NA",
                 wrong_rule="NA",
             )
-
-        if direction in ("UP", "DOWN"):
-            self.last_valid_direction[track_id] = direction
 
         # Di lui can ca direction va body facing cung on dinh.
         # DOWN + FRONT_TO_CAMERA va UP + BACK_TO_CAMERA duoc xem la di lui.
@@ -1063,10 +1340,7 @@ class BehaviorAnalyzer(
         # Khi chua biet chieu di, khong the xac dinh lan can dung/sai ben.
         # Nhung van co the kiem tra xem nguoi do co vin bat ky lan can nao khong.
         # Vi vay UNKNOWN/IDLE khong duoc tu dong coi la "Khong Vin".
-        hold_direction = direction
-        if direction not in ("UP", "DOWN"):
-            # Neu track da tung co huong hop le, dung lai huong cu khi ho dung yen tam thoi.
-            hold_direction = self.last_valid_direction.get(track_id)
+        hold_direction = dir_used_for_hold
 
         # Hold/vin tay la logic doc lap.
         # Khong duoc de logic carry ghi de vao ket qua hold; carry chi di qua lop claim tay.
@@ -1213,12 +1487,15 @@ class BehaviorAnalyzer(
         active_track_ids = set(active_track_ids)
         history_maps = [
             self.track_history,
+            self.direction_axis_history,
+            self.direction_flip_state,
             self.lane_history,
             self.head_lane_history,
             self.lane_last_state,
             self.lane_last_seen,
             self.hold_status_history,
             self.last_valid_direction,
+            self.last_valid_direction_frame,
             self.inside_last_seen,
             self.head_zone_hits,
             self.ever_confirmed_inside,

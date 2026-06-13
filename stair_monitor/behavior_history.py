@@ -19,6 +19,21 @@ class BehaviorHistoryMixin:
     # Reset history theo tung track_id khi nguoi ra khoi vung hoac mat track.
     # Moi track co bo history rieng de tranh lay ket qua frame cu cua nguoi nay gan sang nguoi khac.
     def _reset_behavior_histories(self, track_id):
+        if hasattr(self, "track_history") and track_id in self.track_history:
+            self.track_history[track_id] = []
+        if (
+            hasattr(self, "direction_axis_history")
+            and track_id in self.direction_axis_history
+        ):
+            self.direction_axis_history[track_id] = []
+        if (
+            hasattr(self, "direction_flip_state")
+            and track_id in self.direction_flip_state
+        ):
+            self.direction_flip_state[track_id] = {
+                "candidate": None,
+                "hits": 0,
+            }
         if track_id in self.lane_history:
             self.lane_history[track_id] = []
         if hasattr(self, "head_lane_history") and track_id in self.head_lane_history:
