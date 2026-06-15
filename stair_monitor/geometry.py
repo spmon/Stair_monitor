@@ -269,6 +269,13 @@ def compute_body_facing_evidence(keypoints, conf_th=0.5):
     }
 
 
+# Uoc luong huong than/mat de phuc vu logic di lui, khong dung de tinh lane.
+def estimate_body_facing(keypoints, conf_th=0.5):
+    return compute_body_facing_evidence(keypoints, conf_th).get(
+        "body_facing", "UNKNOWN"
+    )
+
+
 # Xac dinh tay trai dang nam ben trai hay ben phai anh de debug body orientation.
 def estimate_arm_side_order(keypoints, conf_th=0.5):
     """
@@ -355,21 +362,8 @@ def extract_pose_features(keypoints, bbox):
             int(bbox_tuple[3]),
         )
 
-    bbox_upper_center = None
-    if bbox_tuple is not None and len(bbox_tuple) >= 4:
-        bbox_upper_center = (
-            int((bbox_tuple[0] + bbox_tuple[2]) / 2),
-            int(bbox_tuple[1] + 0.25 * (bbox_tuple[3] - bbox_tuple[1])),
-        )
-
     hip_center = _midpoint(left_hip, right_hip)
     shoulder_center = _midpoint(left_shoulder, right_shoulder)
-    torso_points = [
-        point
-        for point in [left_shoulder, right_shoulder, left_hip, right_hip]
-        if point is not None
-    ]
-    torso_center = _average_points(torso_points) if len(torso_points) >= 2 else None
     head_center = _average_points([nose, left_eye, right_eye, left_ear, right_ear])
     body_facing_evidence = compute_body_facing_evidence(keypoints)
 
@@ -386,27 +380,14 @@ def extract_pose_features(keypoints, bbox):
     feet_reliable = ankle_valid_count > 0
 
     # motion_point dai dien cho chuyen dong tong the cua nguoi.
-    # Thu tu uu tien giup direction on dinh hon khi chan/bbox rung vi bi che.
-    motion_point = None
-    motion_point_source = "NA"
-    if hip_center is not None:
-        motion_point = hip_center
-        motion_point_source = "HIP_CENTER"
-    elif shoulder_center is not None:
-        motion_point = shoulder_center
-        motion_point_source = "SHOULDER_CENTER"
-    elif torso_center is not None:
-        motion_point = torso_center
-        motion_point_source = "TORSO_CENTER"
-    elif head_center is not None:
-        motion_point = head_center
-        motion_point_source = "HEAD_CENTER"
-    elif bbox_upper_center is not None:
-        motion_point = bbox_upper_center
-        motion_point_source = "BBOX_UPPER_CENTER_FALLBACK"
-    elif bbox_center is not None:
-        motion_point = bbox_center
-        motion_point_source = "BBOX_CENTER_FALLBACK"
+    # Khong uu tien chan vi chan de nhieu khi pose rung hoac buoc buoc tren cau thang.
+    motion_point = hip_center or bbox_center or bbox_bottom_center
+    bbox_upper_center = None
+    if bbox_tuple is not None and len(bbox_tuple) >= 4:
+        bbox_upper_center = (
+            int((bbox_tuple[0] + bbox_tuple[2]) / 2),
+            int(bbox_tuple[1] + 0.25 * (bbox_tuple[3] - bbox_tuple[1])),
+        )
 
     upper_point = None
     upper_point_source = "NA"
@@ -441,11 +422,9 @@ def extract_pose_features(keypoints, bbox):
         "left_ankle": left_ankle,
         "right_ankle": right_ankle,
         "hip_center": hip_center,
-        "torso_center": torso_center,
         "head_center": head_center,
         "shoulder_center": shoulder_center,
         "motion_point": motion_point,
-        "motion_point_source": motion_point_source,
         "feet_point": feet_point,
         "inside_feet_point": inside_feet_point,
         "upper_point": upper_point,
