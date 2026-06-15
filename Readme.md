@@ -1,364 +1,342 @@
-# VNA Demo
-
-Repo này chứa các bài toán computer vision phục vụ demo an toàn lao động:
-
-- Giám sát hành vi lên/xuống cầu thang.
-- Kiểm tra PPE (mũ bảo hộ, áo phản quang).
-- Cảnh báo người đi vào vùng nguy hiểm.
-- Xem camera RTSP qua WebSocket và ghi video từ trình duyệt.
-
-## 1. Mục tiêu bài toán
-
-Các nhóm chức năng chính trong repo:
-
-- Đếm người trong vùng camera.
-- Nhận dạng người có đội mũ bảo hộ / mặc áo phản quang hay không.
-- Phát hiện hành vi đi cầu thang không an toàn:
-  - Đi sai làn.
-  - Không vịn tay vịn.
-  - Vịn sai bên.
-  - Mang vác vật khi lên/xuống cầu thang.
-  - Đi lùi.
-  - Đứng yên trên cầu thang.
-- Cảnh báo khi người đi vào vùng cấm / vùng nguy hiểm.
-
-Phần cứng dự kiến: Jetson Orin Nano + camera cố định.
-
-## 2. Cấu trúc repo
-
-### 2.1. Thư mục chính
-
-| Đường dẫn | Vai trò |
-| --- | --- |
-| `stair_monitor/` | Lõi phân tích hành vi trên cầu thang. |
-| `ppe_monitor_core/` | Lõi PPE monitor toàn khung hình. |
-| `ppe_monitor_ROI/` | PPE monitor chỉ hoạt động trong ROI. |
-| `Dataset/` | Dataset YOLO dùng để train / validate model PPE. |
-| `runs/` | Kết quả train / predict từ Ultralytics YOLO. |
-| `video/` | Video đầu vào và video output cho các demo. |
-| `venv/` | Virtual environment cục bộ. Không nên push lên git. |
-
-### 2.2. File chạy chính
-
-| File | Vai trò |
-| --- | --- |
-| `main.py` | Backend FastAPI + WebSocket để stream RTSP và nhận lệnh bắt đầu / dừng ghi video. file này chạy trên jetson orin nano để lấy dữ liệu.|
-| `viewer.html` | Giao diện web xem luồng camera qua WebSocket. |
-| `test-cauthang.py` | Entrypoint chạy demo giám sát hành vi cầu thang. |
-| `ppe.py` | Entrypoint chạy PPE monitor theo ROI. |
-| `ppe_monitor.py` | Entrypoint chạy PPE monitor toàn khung hình. |
-| `danger_zone_monitor.py` | Demo cảnh báo người bước vào vùng nguy hiểm. |
-
-### 2.3. File hỗ trợ / tiện ích
-
-| File | Vai trò |
-| --- | --- |
-| `draw_camera_points.py` | Vẽ lại `camera_config.json` lên ảnh để kiểm tra ROI, tay vịn, bậc thang, center line. |
-| `veline.py` | Công cụ click trực tiếp lên ảnh để tạo / sửa file cấu hình không gian camera. |
-| `trainyolo.py` | Script train model PPE bằng Ultralytics YOLO. |
-| `yolotest.py` | Script test / predict model PPE trên video. |
-| `pose-test.py` | Script test YOLO pose tracking trên video. |
-| `tachframe.py` | Tách frame từ video ra ảnh để làm dataset hoặc kiểm tra dữ liệu. |
-| `camera_config.json` | Cấu hình không gian chính cho bài toán cầu thang. |
-| `camera_config2.json` | Một cấu hình camera phụ / thử nghiệm. |
-
-## 3. Chi tiết từng module
-
-### 3.1. `stair_monitor/`
-
-Đây là module lớn nhất cho bài toán giám sát hành vi trên cầu thang.
-
-| File | Vai trò |
-| --- | --- |
-| `settings.py` | Toàn bộ đường dẫn input/output, cờ debug, ngưỡng hình học và ngưỡng xác nhận hành vi. |
-| `analyzer.py` | Lớp `BehaviorAnalyzer`, đóng vai trò điều phối toàn bộ phân tích hành vi. |
-| `geometry.py` | Các hàm hình học cơ bản: góc tay, hướng cơ thể, quan hệ vị trí. |
-| `handrail_analysis.py` | Suy luận trạng thái vịn tay vịn: đúng bên, sai bên, không vịn. |
-| `carry.py` | Luật phát hiện tư thế mang vác. |
-| `carry_analysis.py` | Ghép logic mang vác theo lịch sử nhiều frame. |
-| `behavior_history.py` | Lưu lịch sử để xác nhận hướng đi, sai làn, đứng yên, đi lùi. |
-| `result_builder.py` | Tổng hợp trạng thái cuối cùng thành nhãn, màu, cảnh báo hiển thị. |
-| `rendering.py` | Vẽ bbox, nhãn, guide line, people count, debug info. |
-
-### 3.2. `ppe_monitor_core/`
-
-Đây là bản PPE monitor toàn khung hình, không lọc theo ROI.
-
-| File | Vai trò |
-| --- | --- |
-| `config.py` | Đường dẫn video/model, ngưỡng confidence, ngưỡng overlap, ngưỡng temporal smoothing. |
-| `geometry.py` | Tạo `head_bbox`, `torso_bbox`, tính overlap. |
-| `detection.py` | Tách bbox PPE từ model, lọc false positive tóc đen, match mũ/áo với người. |
-| `tracking.py` | Gán track bằng IoU, lưu history mũ/áo, ra trạng thái ổn định theo thời gian. |
-| `rendering.py` | Vẽ bbox debug và bảng đếm số người theo trạng thái PPE. |
-| `pipeline.py` | Luồng chạy chính: load model, đọc video, infer, tracking, render, lưu output. |
-| `__init__.py` | Export `run_ppe_monitor`. |
-
-### 3.3. `ppe_monitor_ROI/`
-
-Đây là biến thể PPE monitor chỉ đánh giá người ở trong ROI.
-
-| File | Vai trò |
-| --- | --- |
-| `config.py` | Cấu hình input/output, threshold và tọa độ ROI. |
-| `roi.py` | Kiểm tra chân người có nằm trong ROI hay không; tạo `head_bbox` và `torso_bbox`. |
-| `tracking.py` | Lưu history PPE theo từng người trong ROI. |
-| `rendering.py` | Vẽ ROI, panel trạng thái và debug PPE. |
-| `pipeline.py` | Pipeline chính cho PPE + ROI. |
-
-### 3.4. `danger_zone_monitor.py`
-
-`danger_zone_monitor.py` hiện là một module đơn file, không tách thành package riêng.
-Chức năng của nó là phát hiện người đi vào vùng cấm bằng YOLO pose.
-
-Các phần chính trong file:
-
-| Thành phần | Vai trò |
-| --- | --- |
-| `roi_coords` | Tọa độ vùng nguy hiểm cần giám sát. |
-| `foot_in_roi()` | Kiểm tra có ít nhất một bàn chân của người nằm trong ROI hay không. |
-| `draw_person_debug()` | Vẽ bbox người và keypoint chân để debug trạng thái trong / ngoài ROI. |
-| `draw_roi()` | Vẽ vùng ROI lên khung hình. |
-| `draw_alert_text()` | Hiển thị dòng cảnh báo lớn khi có người vào vùng cấm. |
-| `run_danger_zone_monitor()` | Pipeline chính: đọc video, chạy pose model, kiểm tra ROI, render cảnh báo, lưu output. |
-
-Khi phát hiện người trong ROI:
-
-- viền ROI đổi sang màu đỏ,
-- khung hình có hiệu ứng nháy đỏ,
-- xuất hiện cảnh báo `DANGER: PERSON IN RESTRICTED AREA`.
-
-## 4. Luồng dữ liệu
-
-### 4.1. Luồng RTSP WebSocket
-
-`RTSP camera` -> `main.py` đọc frame bằng OpenCV -> encode JPEG base64 -> gửi qua WebSocket -> `viewer.html` hiển thị trên trình duyệt
-
-Ngoài việc xem hình trực tiếp:
-
-- `viewer.html` gửi `START_REC` -> `main.py` bắt đầu ghi file `record_YYYY-MM-DD_HH-MM-SS.avi`.
-- `viewer.html` gửi `STOP_REC` -> `main.py` dừng ghi và đóng file video.
-
-### 4.2. Luồng stair monitor
-
-`video đầu vào` -> `YOLO pose tracking` -> `bbox + track_id + keypoints`
-
-Sau đó:
-
-- `rendering.get_feet_point()` lấy điểm đại diện cho vị trí chân.
-- `rendering.get_motion_point()` lấy điểm đại diện cho chuyển động thân người.
-- `BehaviorAnalyzer.analyze()` suy luận:
-  - Người có nằm trong vùng cầu thang không.
-  - Đang đi lên hay đi xuống.
-  - Có đi sai làn không.
-  - Có vịn tay vịn không.
-  - Có vịn đúng bên không.
-  - Có mang vác không.
-  - Có đi lùi không.
-  - Có đứng yên quá lâu không.
-- `result_builder.py` gộp các tín hiệu trên thành trạng thái cuối.
-- `rendering.py` vẽ overlay và người đếm.
-- Kết quả được ghi ra video output.
-
-### 4.3. Luồng PPE monitor toàn khung hình
-
-`video đầu vào` -> `YOLO pose model` + `YOLO PPE model`
-
-Sau đó:
-
-- `parse_ppe_boxes()` lấy bbox mũ và áo.
-- `get_head_bbox()` và `get_torso_bbox()` sinh vùng mục tiêu cho từng người.
-- `match_ppe_item()` match mũ / áo vào từng người bằng center check + overlap.
-- `tracking.py` lưu history ngắn hạn theo track.
-- `update_stable_state()` dùng nhiều frame liên tiếp để giảm rung trạng thái.
-- `rendering.draw_count_panel()` hiển thị số người đủ PPE / thiếu mũ / thiếu áo.
-- Ghi video output.
-
-### 4.4. Luồng PPE monitor theo ROI
-
-`video đầu vào` -> `pose model` + `PPE model`
-
-Khác biệt so với bản toàn khung hình:
-
-- Chỉ xử lý người có chân nằm trong ROI.
-- Có vẽ ROI và panel trạng thái tổng thể cho vùng đó.
-- Dùng temporal smoothing để giảm flicker giữa các frame.
-
-### 4.5. Luồng danger zone monitor
-
-`video đầu vào` -> `YOLO pose model`
-
-Sau đó:
-
-- Lấy keypoint chân.
-- Kiểm tra chân có nằm trong ROI cấm không.
-- Nếu có người trong ROI:
-  - ROI đổi màu đỏ.
-  - Khung hình chớp đỏ.
-  - Hiện cảnh báo `DANGER: PERSON IN RESTRICTED AREA`.
-
-## 5. Cấu hình đầu vào cần chuẩn bị
-
-### 5.1. Model
-
-Repo hiện đang dùng các model sau:
-
-- Pose model: `yolo11x-pose.pt`, `yolo11m-pose.pt` hoặc model pose YOLO tương đương.
-- PPE detection model: `runs/detect/ppe-2class-6/weights/best.pt`.
-
-Nếu thiếu file model, script sẽ lỗi khi load `YOLO(...)`.
-
-### 5.2. Video và camera
-
-Cần sửa đường dẫn input/output đúng với máy của bạn:
-
-- `stair_monitor/settings.py`
-- `ppe_monitor_core/config.py`
-- `ppe_monitor_ROI/config.py`
-- `danger_zone_monitor.py`
-- `main.py` nếu dùng RTSP thật
-
-### 5.3. Cấu hình không gian cầu thang
-
-`camera_config.json` hiện chứa các key chính:
-
-- `ROI`
-- `HANDRAIL_LEFT_POLY`
-- `HANDRAIL_RIGHT_POLY`
-- `STEP_BOTTOM`
-- `STEP_TOP`
-- `CENTER_LINE`
-
-Các key này được `stair_monitor` dùng để suy luận:
-
-- vùng cầu thang cần theo dõi,
-- tay vịn trái / phải,
-- bậc dưới cùng / trên cùng,
-- trục giữa để xác định làn và hướng đi.
-
-## 6. Cài đặt môi trường
-
-Khuyến nghị Python `3.10` đến `3.12`.
-
-### 6.1. Tạo môi trường ảo
+# HƯỚNG DẪN SỬ DỤNG
+
+> **Phạm vi tài liệu:** Hướng dẫn này áp dụng cho bản Windows/demo ở thư mục gốc của repo. Không áp dụng cho `jetson_orin_nano/`.
+
+## 1. Giới thiệu Tổng quan
+
+Đây là hệ thống Demo An toàn lao động ứng dụng Computer Vision dựa trên YOLO, dùng để giám sát hành vi và phát hiện vi phạm từ video hoặc camera.
+
+Các tính năng chính:
+
+- Giám sát hành vi di chuyển trên cầu thang (`Stair Monitor`)
+- Kiểm tra PPE theo vùng quan tâm (`PPE ROI`)
+- Kiểm tra PPE trên toàn khung hình (`PPE Full-frame`)
+- Cảnh báo người đi vào vùng nguy hiểm (`Danger Zone`)
+
+## 2. Cấu trúc Thư mục & Chuẩn bị Tài nguyên
+
+### 2.1. Sơ đồ cây source code
+
+```text
+vnaDemo/
+├── Dataset/
+│   ├── data.yaml
+│   ├── data1/
+│   ├── data2/
+│   └── data6/
+├── stair_monitor/
+│   ├── analyzer.py
+│   ├── behavior_history.py
+│   ├── carry.py
+│   ├── carry_analysis.py
+│   ├── geometry.py
+│   ├── handrail_analysis.py
+│   ├── rendering.py
+│   ├── result_builder.py
+│   └── settings.py
+├── ppe_monitor_core/
+│   ├── config.py
+│   ├── detection.py
+│   ├── geometry.py
+│   ├── pipeline.py
+│   ├── rendering.py
+│   └── tracking.py
+├── ppe_monitor_ROI/
+│   ├── config.py
+│   ├── pipeline.py
+│   ├── rendering.py
+│   ├── roi.py
+│   └── tracking.py
+├── camera_config.json
+├── camera_config2.json
+├── danger_zone_monitor.py
+├── draw_camera_points.py
+├── ppe.py
+├── ppe_monitor.py
+├── test-cauthang.py
+├── trainyolo.py
+├── veline.py
+├── viewer.html
+└── requirements.txt
+```
+
+### 2.2. Tài nguyên local cần chuẩn bị
+
+Chuẩn bị các tài nguyên sau trước khi chạy dự án:
+
+| Tài nguyên | Dùng cho chức năng | Yêu cầu | Vị trí đặt khuyến nghị |
+| --- | --- | --- | --- |
+| `video/` | Tất cả các bài toán chạy video offline | Chứa video đầu vào `.avi` hoặc `.mp4` và thư mục lưu output | Nên tạo các nhánh như `video/raw_video/`, `video/stair_demo/`, `video/ppe_demo/` |
+| Pose model `*.pt` | Stair Monitor, PPE Full-frame, PPE ROI, Danger Zone | File YOLO pose, ví dụ `yolo11x-pose.pt` hoặc `yolo11m-pose.pt` | Repo root hoặc đổi lại path trong code |
+| PPE model `best.pt` | PPE ROI, PPE Full-frame | File weight đã train cho bài toán PPE | Có thể đặt tại `runs/detect/ppe-2class-6/weights/best.pt` để khớp path mặc định |
+| Ảnh `.jpg` để cấu hình camera | `veline.py`, `draw_camera_points.py` | Ảnh snapshot từ camera cần hiệu chỉnh | Repo root hoặc đường dẫn bất kỳ nếu truyền bằng tham số |
+| `main.py` | Web Viewer RTSP/WebSocket | File backend FastAPI/Uvicorn nếu muốn xem realtime qua `viewer.html` | Đặt tại thư mục gốc repo |
+
+## 3. Hướng dẫn Cài đặt Môi trường
+
+### Bước 1. Clone repo
+
+```bash
+git clone <YOUR_REPO_URL>
+cd vnaDemo
+```
+
+### Bước 2. Khởi tạo và kích hoạt môi trường ảo
+
+#### Windows PowerShell
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\activate
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 ```
 
-### 6.2. Cài thư viện
+#### Linux
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+```
+
+### Bước 3. Cài đặt thư viện
 
 ```powershell
 pip install -r requirements.txt
 ```
 
-Nếu bạn không dùng `requirements.txt`, có thể cài trực tiếp:
+> **LƯU Ý RẤT QUAN TRỌNG VỀ PYTORCH + CUDA 12.1**
+>
+> Repo này đang dùng:
+>
+> - `torch==2.5.1+cu121`
+> - `torchvision==0.20.1+cu121`
+>
+> Nếu bạn chạy bằng GPU NVIDIA, hãy bảo đảm PyTorch được cài đúng bản `CUDA 12.1`. Không dùng nhầm bản CPU nếu bạn cần tăng tốc GPU.
+>
+> Cách cài khuyến nghị:
+>
+> ```powershell
+> pip install torch==2.5.1+cu121 torchvision==0.20.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+> pip install -r requirements.txt
+> ```
+>
+> Kiểm tra lại sau khi cài:
+>
+> ```powershell
+> python -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available())"
+> ```
+>
+> Nếu kết quả `torch.cuda.is_available()` trả về `False`, hãy kiểm tra lại driver NVIDIA, CUDA runtime và phiên bản wheel PyTorch đang dùng.
 
-```powershell
-pip install ultralytics opencv-python numpy shapely fastapi "uvicorn[standard]"
-```
+## 4. Hướng dẫn Vận hành chi tiết
 
-### 6.3. Ghi chú cho Jetson
+### 4.1. Giám sát cầu thang
 
-- Trên Jetson, `cv2` và `torch` thường nên cài theo bản phù hợp với JetPack trước.
-- Sau khi có `torch` và `cv2`, cài tiếp `ultralytics`, `fastapi`, `uvicorn`, `shapely`.
-- Nếu `opencv-python` cài bằng `pip` không ổn trên Jetson, dùng OpenCV hệ thống là hợp lý.
+**Mục đích:** Phát hiện người di chuyển trên cầu thang, xác định hướng `UP/DOWN`, phát hiện sai làn, không vịn tay, vịn sai bên, mang vác, đi lùi và đứng yên.
 
-## 7. Cách chạy
+**Bước 1 - Cấu hình:**
 
-### 7.1. Chạy web viewer RTSP
+Mở `stair_monitor/settings.py` và sửa các biến quan trọng sau:
 
-Sửa `RTSP_URL` trong `main.py`, sau đó chạy:
+- `VIDEO_INPUT_PATH`
+- `VIDEO_OUTPUT_PATH`
+- `CAMERA_CONFIG_PATH`
+- `USE_CURRENT_CAMERA_ANGLE`
 
-```powershell
-python main.py
-```
+Mở thêm `test-cauthang.py` và kiểm tra đường dẫn pose model tại dòng khởi tạo:
 
-Mở `viewer.html` trên trình duyệt.
+- `YOLO("yolo11x-pose.pt")`
 
-Lưu ý:
+Nếu thay đổi camera hoặc góc quay, kiểm tra lại các file:
 
-- Trong `viewer.html`, ô WebSocket mặc định đang là `ws://100.64.0.17:8080/ws`.
-- Nếu backend chạy trên máy khác, sửa đúng IP trước khi bấm connect.
+- `camera_config.json`
+- `camera_config2.json`
 
-### 7.2. Chạy demo hành vi cầu thang
-
-Sửa `VIDEO_INPUT_PATH`, `VIDEO_OUTPUT_PATH`, `CAMERA_CONFIG_PATH` trong `stair_monitor/settings.py`, sau đó chạy:
+**Bước 2 - Lệnh chạy:**
 
 ```powershell
 python test-cauthang.py
 ```
 
-### 7.3. Chạy PPE monitor theo ROI
+### 4.2. Kiểm tra PPE theo ROI
 
-Sửa `VIDEO_INPUT_PATH`, `VIDEO_OUTPUT_PATH`, `ROI_COORDS` trong `ppe_monitor_ROI/config.py`, sau đó chạy:
+**Mục đích:** Chỉ kiểm tra PPE cho người nằm trong một vùng ROI xác định trước.
+
+**Bước 1 - Cấu hình:**
+
+Mở `ppe_monitor_ROI/config.py` và sửa:
+
+- `VIDEO_INPUT_PATH`
+- `VIDEO_OUTPUT_PATH`
+- `ROI_COORDS`
+
+Mở `ppe_monitor_ROI/pipeline.py` và kiểm tra 2 weight model đang được nạp trực tiếp:
+
+- `YOLO("yolo11m-pose.pt")`
+- `YOLO("runs/detect/ppe-2class-6/weights/best.pt")`
+
+Nếu bạn đặt model ở vị trí khác, hãy sửa lại đúng path tại file này.
+
+**Bước 2 - Lệnh chạy:**
 
 ```powershell
 python ppe.py
 ```
 
-### 7.4. Chạy PPE monitor toàn khung hình
+### 4.3. Kiểm tra PPE toàn khung hình
 
-Sửa `VIDEO_INPUT_PATH`, `VIDEO_OUTPUT_PATH` trong `ppe_monitor_core/config.py`, sau đó chạy:
+**Mục đích:** Kiểm tra mũ bảo hộ và áo phản quang trên toàn bộ khung hình, không giới hạn theo ROI.
+
+**Bước 1 - Cấu hình:**
+
+Mở `ppe_monitor_core/config.py` và sửa:
+
+- `VIDEO_INPUT_PATH`
+- `VIDEO_OUTPUT_PATH`
+- `POSE_MODEL_PATH`
+- `PPE_MODEL_PATH`
+
+**Bước 2 - Lệnh chạy:**
 
 ```powershell
 python ppe_monitor.py
 ```
 
-### 7.5. Chạy danger zone monitor
+### 4.4. Cảnh báo vùng nguy hiểm
 
-Sửa ROI và đường dẫn video ngay trong `danger_zone_monitor.py`, sau đó chạy:
+**Mục đích:** Phát hiện người đi vào vùng cấm và sinh cảnh báo trực tiếp trên video output.
+
+**Bước 1 - Cấu hình:**
+
+Mở `danger_zone_monitor.py` và sửa:
+
+- `VIDEO_INPUT_PATH`
+- `VIDEO_OUTPUT_PATH`
+- `POSE_MODEL_PATH`
+- `roi_coords`
+
+**Bước 2 - Lệnh chạy:**
 
 ```powershell
 python danger_zone_monitor.py
 ```
 
-### 7.6. Vẽ lại cấu hình camera lên ảnh
+### 4.5. Bộ công cụ cấu hình Camera & Tool hỗ trợ
 
-```powershell
-python draw_camera_points.py --image snapshot_2026-05-27T01-39-57.jpg --config camera_config.json --show
-```
+#### 4.5.1. `veline.py`
 
-### 7.7. Tạo / chỉnh cấu hình camera bằng thao tác click
+**Mục đích:** Tạo hoặc cập nhật file cấu hình camera bằng thao tác click trực tiếp trên ảnh.
+
+**Bước 1 - Cấu hình:**
+
+Mở `veline.py` và sửa:
+
+- `IMAGE_PATH`
+- `CONFIG_FILE`
+
+**Bước 2 - Lệnh chạy:**
 
 ```powershell
 python veline.py
 ```
 
-### 7.8. Train model PPE
+#### 4.5.2. `draw_camera_points.py`
 
-Sửa đường dẫn model / dataset trong `trainyolo.py`, sau đó chạy:
+**Mục đích:** Vẽ các vùng và đường tham chiếu từ `camera_config.json` lên ảnh để kiểm tra ROI, handrail, step và center line.
+
+**Bước 1 - Cấu hình:**
+
+Chuẩn bị:
+
+- 1 file ảnh đầu vào `.jpg`
+- 1 file config camera, ví dụ `camera_config.json`
+
+Bạn có thể truyền trực tiếp bằng tham số dòng lệnh:
+
+- `--image`
+- `--config`
+- `--output`
+- `--show`
+
+**Bước 2 - Lệnh chạy:**
+
+```powershell
+python draw_camera_points.py --image path/to/frame.jpg --config camera_config.json --show
+```
+
+#### 4.5.3. `trainyolo.py`
+
+**Mục đích:** Train model PPE bằng Ultralytics YOLO trên dataset trong repo.
+
+**Bước 1 - Cấu hình:**
+
+Mở `trainyolo.py` và kiểm tra:
+
+- Model khởi tạo đầu vào, hiện tại đang là `runs/detect/ppe-2class-5/weights/last.pt`
+- Dataset YAML, hiện tại đang là `Dataset/data6/data.yaml`
+
+Nếu bạn không dùng đúng cấu trúc này, hãy sửa lại path model hoặc path dataset trước khi train.
+
+**Bước 2 - Lệnh chạy:**
 
 ```powershell
 python trainyolo.py
 ```
 
-### 7.9. Test nhanh model
+## 5. Hướng dẫn sử dụng Web Viewer (RTSP / WebSocket)
+
+Mục này chỉ áp dụng khi bạn có file backend `main.py`.
+
+### Bước 1. Cài thêm thư viện cho backend
 
 ```powershell
-python yolotest.py
-python pose-test.py
+pip install fastapi "uvicorn[standard]"
 ```
 
-## 8. Output được tạo ở đâu
+### Bước 2. Cấu hình nguồn RTSP
 
-| Chức năng | Output mặc định |
-| --- | --- |
-| WebSocket recorder | File `record_*.avi` ở thư mục gốc repo. |
-| Stair monitor | Video trong `video/stair_demo/`. |
-| PPE monitor | Video trong `video/ppe_demo/`. |
-| Danger zone monitor | `video/roi_warning_output.mp4`. |
-| YOLO train / predict | Thư mục `runs/`. |
-| Tách frame | Thư mục output do `tachframe.py` cấu hình, hiện tại là `val2/`. |
+Mở `main.py` và sửa:
 
-## 9. Những file nên sửa đầu tiên khi chạy trên máy mới
+- `RTSP_URL`
 
-- `main.py`
-- `viewer.html`
-- `stair_monitor/settings.py`
-- `ppe_monitor_core/config.py`
-- `ppe_monitor_ROI/config.py`
-- `danger_zone_monitor.py`
-- `camera_config.json`
+Ví dụ trong code hiện tại:
 
+```python
+RTSP_URL = "rtsp://admin:password@IP:554/cam/realmonitor?channel=1&subtype=0"
+```
+
+### Bước 3. Chạy backend WebSocket
+
+```powershell
+python main.py
+```
+
+Backend mặc định sẽ mở WebSocket tại:
+
+```text
+ws://0.0.0.0:8080/ws
+```
+
+### Bước 4. Mở Web Viewer
+
+Mở file `viewer.html` bằng trình duyệt.
+
+Trong giao diện:
+
+- Nhập địa chỉ WebSocket, ví dụ `ws://<IP-máy-chạy-backend>:8080/ws`
+- Nhấn kết nối để xem realtime
+- Dùng các nút điều khiển trên giao diện nếu muốn gửi lệnh ghi hình `START_REC` / `STOP_REC`
+
+Lưu ý:
+
+- Trong `viewer.html`, giá trị mặc định hiện đang là `ws://100.64.0.17:8080/ws`
+- Nếu IP máy backend khác, hãy nhập lại đúng địa chỉ trước khi kết nối
+
+## 6. Xử lý lỗi thường gặp
+
+| Lỗi | Dấu hiệu | Cách xử lý |
+| --- | --- | --- |
+| Không tìm thấy file model | Lỗi phát sinh tại `YOLO("...")` hoặc khi khởi tạo model | Kiểm tra file `.pt` đã tồn tại chưa, kiểm tra đúng tên file, và sửa lại path trong `test-cauthang.py`, `ppe_monitor_ROI/pipeline.py`, `ppe_monitor_core/config.py` hoặc `danger_zone_monitor.py` |
+| `cv2` không đọc được video | `cv2.VideoCapture(...)` không mở được file, hoặc code báo không mở được video | Kiểm tra `VIDEO_INPUT_PATH`, bảo đảm file `.avi/.mp4` tồn tại, tạo sẵn thư mục `video/` nếu đang dùng path bên trong repo, và kiểm tra quyền đọc file |
+| Mismatch CUDA / PyTorch | GPU không được nhận, `torch.cuda.is_available()` trả về `False`, hoặc lỗi khi chạy inference deep learning | Cài lại đúng `torch==2.5.1+cu121` và `torchvision==0.20.1+cu121`, kiểm tra driver NVIDIA, sau đó xác minh lại bằng lệnh `python -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available())"` |
