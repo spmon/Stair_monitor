@@ -26,6 +26,7 @@ from stair_monitor.settings import (
     HEAD_ZONE_CONFIRM_FRAMES,
     HEAD_ZONE_GRACE_FRAMES,
     HEAD_LANE_SIGN_NORMAL,
+    LANE_LEFT_SIDE_SIGN,
     INSIDE_STAIRS_GRACE_FRAMES,
     LANE_MISSING_FEET_GRACE_FRAMES,
     LANE_SIGN_NORMAL,
@@ -34,6 +35,7 @@ from stair_monitor.settings import (
     STAIRS_LEFT_EXPAND_BOTTOM_PX,
     STAIRS_LEFT_EXPAND_TOP_PX,
     UNKNOWN_COLOR,
+    USE_CURRENT_CAMERA_ANGLE,
 )
 
 HAND_CLAIM_HOLD_HITS = 4
@@ -67,13 +69,13 @@ class BehaviorAnalyzer(
         step_bottom = config.get("STEP_BOTTOM", [[0, 0], [0, 0]])
         step_top = config.get("STEP_TOP", [[0, 0], [0, 0]])
         bottom_left = [
-            step_bottom[0][0] - STAIRS_LEFT_EXPAND_BOTTOM_PX,
+            step_bottom[0][0] ,
             step_bottom[0][1],
         ]
         bottom_right = step_bottom[1]
         top_right = step_top[1]
         top_left = [
-            step_top[0][0] - STAIRS_LEFT_EXPAND_TOP_PX,
+            step_top[0][0] ,
             step_top[0][1],
         ]
         self.stairs_poly = np.array(
@@ -139,6 +141,11 @@ class BehaviorAnalyzer(
         if side_value is None or direction not in ("UP", "DOWN"):
             return None
 
+        if not USE_CURRENT_CAMERA_ANGLE:
+            if direction == "DOWN":
+                return not BehaviorAnalyzer._is_left_lane_side(side_value)
+            return not BehaviorAnalyzer._is_right_lane_side(side_value)
+
         if sign_normal:
             return (direction == "UP" and side_value < 0) or (
                 direction == "DOWN" and side_value > 0
@@ -146,6 +153,44 @@ class BehaviorAnalyzer(
         return (direction == "UP" and side_value > 0) or (
             direction == "DOWN" and side_value < 0
         )
+
+    @staticmethod
+    def _get_camera_angle_profile():
+        return "CURRENT_CAMERA" if USE_CURRENT_CAMERA_ANGLE else "BOTTOM_STAIR_CAMERA"
+
+    @staticmethod
+    def _is_left_lane_side(side_value):
+        if side_value is None or side_value == 0:
+            return False
+        return side_value * LANE_LEFT_SIDE_SIGN > 0
+
+    @staticmethod
+    def _is_right_lane_side(side_value):
+        if side_value is None or side_value == 0:
+            return False
+        return side_value * LANE_LEFT_SIDE_SIGN < 0
+
+    @staticmethod
+    def _get_lane_side_label(side_value):
+        if side_value is None:
+            return "UNKNOWN"
+        if BehaviorAnalyzer._is_left_lane_side(side_value):
+            return "LEFT"
+        if BehaviorAnalyzer._is_right_lane_side(side_value):
+            return "RIGHT"
+        return "ON_LINE"
+
+    @staticmethod
+    def _get_correct_lane_side(direction, sign_normal):
+        if direction not in ("UP", "DOWN"):
+            return "UNKNOWN"
+
+        if not USE_CURRENT_CAMERA_ANGLE:
+            return "LEFT" if direction == "DOWN" else "RIGHT"
+
+        if sign_normal:
+            return "RIGHT" if direction == "UP" else "LEFT"
+        return "LEFT" if direction == "UP" else "RIGHT"
 
     def _evaluate_inside_stairs(self, track_id, features, fallback_lane_point):
         _ = fallback_lane_point
@@ -554,10 +599,18 @@ class BehaviorAnalyzer(
         ear_pair_valid = bool(features.get("ear_pair_valid", False))
         head_valid = bool(features.get("head_valid", False))
         arm_side_order = features.get("arm_side_order", "UNKNOWN")
+        use_current_camera_angle = USE_CURRENT_CAMERA_ANGLE
+        camera_angle_profile = self._get_camera_angle_profile()
 
         direction = "ANALYZING"
         dy = None
+        direction_dy = None
+        direction_reason = "ANALYZING"
         v = None
+        lane_side_value = None
+        lane_side_label = "UNKNOWN"
+        correct_lane_side = "UNKNOWN"
+        lane_mapping_source = camera_angle_profile
         wrong_lane_raw = False
         wrong_lane = False
         lane_wrong_hits = 0
@@ -631,9 +684,11 @@ class BehaviorAnalyzer(
         best_wrist_point = None
         dist_wrist = -999
         wrist_side = "UNKNOWN"
+        handrail_mapping_source = camera_angle_profile
         backward_raw = False
         backward_hits = 0
         backward_confirmed = False
+        backward_mapping_source = camera_angle_profile
         backward_reason = "UNKNOWN_NOT_ENOUGH_EVIDENCE"
         standing_raw = False
         standing_hits = 0
@@ -722,6 +777,7 @@ class BehaviorAnalyzer(
         # Chua du lich su chuyen dong thi chua duoc ket luan direction.
         # Giai doan nay van co the thu hold/standing de phuc vu debug/demo, nhung khong duoc ep thanh UP/DOWN.
         if len(self.track_history[track_id]) < DIRECTION_MIN_FRAMES:
+            direction_reason = "DIRECTION_HISTORY_NOT_ENOUGH"
             if not inside_stairs:
                 # Ra khoi vung thi reset history de track cu khong lam ban frame sau.
                 self._reset_behavior_histories(track_id)
@@ -842,22 +898,42 @@ class BehaviorAnalyzer(
         # IDLE co nghia la chua du chuyen dong de ket luan UP/DOWN.
         direction_start = time.perf_counter() if perf is not None else None
         dy = self.track_history[track_id][-1] - self.track_history[track_id][0]
+        direction_dy = dy
         self.track_history[track_id] = self.track_history[track_id][
             -DIRECTION_HISTORY_LEN:
         ]
 
-        if DIRECTION_SIGN_NORMAL:
-            direction = (
-                "UP"
-                if dy < -DIRECTION_PIXEL_THRESHOLD
-                else "DOWN" if dy > DIRECTION_PIXEL_THRESHOLD else "IDLE"
-            )
+        if USE_CURRENT_CAMERA_ANGLE:
+            if DIRECTION_SIGN_NORMAL:
+                if dy < -DIRECTION_PIXEL_THRESHOLD:
+                    direction = "UP"
+                    direction_reason = "LEGACY_SIGN_NORMAL_Y_DECREASE_UP"
+                elif dy > DIRECTION_PIXEL_THRESHOLD:
+                    direction = "DOWN"
+                    direction_reason = "LEGACY_SIGN_NORMAL_Y_INCREASE_DOWN"
+                else:
+                    direction = "IDLE"
+                    direction_reason = "LEGACY_DIRECTION_IDLE_THRESHOLD"
+            else:
+                if dy < -DIRECTION_PIXEL_THRESHOLD:
+                    direction = "DOWN"
+                    direction_reason = "LEGACY_SIGN_INVERTED_Y_DECREASE_DOWN"
+                elif dy > DIRECTION_PIXEL_THRESHOLD:
+                    direction = "UP"
+                    direction_reason = "LEGACY_SIGN_INVERTED_Y_INCREASE_UP"
+                else:
+                    direction = "IDLE"
+                    direction_reason = "LEGACY_DIRECTION_IDLE_THRESHOLD"
         else:
-            direction = (
-                "DOWN"
-                if dy < -DIRECTION_PIXEL_THRESHOLD
-                else "UP" if dy > DIRECTION_PIXEL_THRESHOLD else "IDLE"
-            )
+            if dy > DIRECTION_PIXEL_THRESHOLD:
+                direction = "DOWN"
+                direction_reason = "NEW_CAMERA_Y_INCREASE_DOWN"
+            elif dy < -DIRECTION_PIXEL_THRESHOLD:
+                direction = "UP"
+                direction_reason = "NEW_CAMERA_Y_DECREASE_UP"
+            else:
+                direction = "IDLE"
+                direction_reason = "NEW_CAMERA_DIRECTION_IDLE_THRESHOLD"
         self._record_perf(perf, "direction", direction_start)
 
         if not inside_stairs:
@@ -931,18 +1007,33 @@ class BehaviorAnalyzer(
                 backward_reason = "UNKNOWN_OCCLUDED"
             else:
                 backward_reason = "UNKNOWN_NOT_ENOUGH_EVIDENCE"
-        elif direction == "DOWN" and is_front_to_camera(body_facing):
-            backward_raw = True
-            backward_history_value = True
-            backward_reason = "OK_DOWN_FRONT"
-        elif direction == "UP" and is_back_to_camera(body_facing):
-            backward_raw = True
-            backward_history_value = True
-            backward_reason = "OK_UP_BACK"
         else:
-            backward_raw = False
-            backward_history_value = False
-            backward_reason = "NORMAL_DIRECTION_FACING"
+            if USE_CURRENT_CAMERA_ANGLE:
+                if direction == "DOWN" and is_front_to_camera(body_facing):
+                    backward_raw = True
+                    backward_history_value = True
+                    backward_reason = "OK_DOWN_FRONT"
+                elif direction == "UP" and is_back_to_camera(body_facing):
+                    backward_raw = True
+                    backward_history_value = True
+                    backward_reason = "OK_UP_BACK"
+                else:
+                    backward_raw = False
+                    backward_history_value = False
+                    backward_reason = "NORMAL_DIRECTION_FACING"
+            else:
+                if direction == "DOWN" and is_back_to_camera(body_facing):
+                    backward_raw = True
+                    backward_history_value = True
+                    backward_reason = "NEW_CAMERA_DOWN_BACK_IS_BACKWARD"
+                elif direction == "UP" and is_front_to_camera(body_facing):
+                    backward_raw = True
+                    backward_history_value = True
+                    backward_reason = "NEW_CAMERA_UP_FRONT_IS_BACKWARD"
+                else:
+                    backward_raw = False
+                    backward_history_value = False
+                    backward_reason = "NORMAL_DIRECTION_FACING"
 
         backward_hits, backward_confirmed = self._update_backward_history(
             track_id, backward_history_value
@@ -962,13 +1053,20 @@ class BehaviorAnalyzer(
         if p_lane is not None:
             lane_source = "FOOT_LANE"
             self.head_lane_history[track_id] = []
+            if len(self.center_line) >= 2:
+                foot_lane_side = self._compute_lane_side(p_lane, self.center_line)
+                v = foot_lane_side
+                lane_side_value = foot_lane_side
+                lane_side_label = self._get_lane_side_label(foot_lane_side)
+                correct_lane_side = self._get_correct_lane_side(
+                    direction,
+                    LANE_SIGN_NORMAL,
+                )
             if direction not in ("UP", "DOWN"):
                 lane_wrong_hits, wrong_lane = self._get_lane_history_state(track_id)
                 lane_status = "UNKNOWN"
                 lane_reason = "LANE_BY_FEET"
             elif len(self.center_line) >= 2:
-                foot_lane_side = self._compute_lane_side(p_lane, self.center_line)
-                v = foot_lane_side
                 wrong_lane_raw = self._is_wrong_lane_side(
                     direction,
                     foot_lane_side,
@@ -989,17 +1087,24 @@ class BehaviorAnalyzer(
             and head_center_line_valid
         ):
             lane_source = "HEAD_LANE"
+            lane_mapping_source = camera_angle_profile
+            head_lane_side = self._compute_lane_side(
+                upper_point,
+                self.head_center_line,
+            )
+            v = head_lane_side
+            lane_side_value = head_lane_side
+            lane_side_label = self._get_lane_side_label(head_lane_side)
+            correct_lane_side = self._get_correct_lane_side(
+                direction,
+                HEAD_LANE_SIGN_NORMAL,
+            )
             if direction not in ("UP", "DOWN"):
                 head_lane_hits, wrong_lane = self._get_head_lane_history_state(track_id)
                 lane_wrong_hits = head_lane_hits
                 lane_status = "UNKNOWN"
                 lane_reason = "LANE_BY_HEAD_ZONE_NO_FEET"
             else:
-                head_lane_side = self._compute_lane_side(
-                    upper_point,
-                    self.head_center_line,
-                )
-                v = head_lane_side
                 head_lane_raw = self._is_wrong_lane_side(
                     direction,
                     head_lane_side,
@@ -1034,6 +1139,13 @@ class BehaviorAnalyzer(
                 head_lane_side = last_lane_state.get("head_lane_side")
                 head_lane_raw = last_lane_state.get("head_lane_raw")
                 head_lane_hits = last_lane_state.get("head_lane_hits", 0)
+                lane_side_value = last_lane_state.get("lane_side_value")
+                lane_side_label = last_lane_state.get("lane_side_label", "UNKNOWN")
+                correct_lane_side = last_lane_state.get("correct_lane_side", "UNKNOWN")
+                lane_mapping_source = last_lane_state.get(
+                    "lane_mapping_source",
+                    lane_mapping_source,
+                )
                 lane_reason = "MISSING_FEET_KEEP_LAST"
                 p_lane_source = "NO_FOOT"
             else:
@@ -1044,6 +1156,9 @@ class BehaviorAnalyzer(
                 lane_source = "NO_LANE"
                 lane_reason = "MISSING_FEET_NO_DISPLAY"
                 p_lane_source = "NO_FOOT"
+                lane_side_value = None
+                lane_side_label = "UNKNOWN"
+                correct_lane_side = "UNKNOWN"
         if lane_source in ("FOOT_LANE", "HEAD_LANE"):
             self.lane_last_seen[track_id] = self.frame_index
             self.lane_last_state[track_id] = {
@@ -1057,6 +1172,10 @@ class BehaviorAnalyzer(
                 "head_lane_side": head_lane_side,
                 "head_lane_raw": head_lane_raw,
                 "head_lane_hits": head_lane_hits,
+                "lane_side_value": lane_side_value,
+                "lane_side_label": lane_side_label,
+                "correct_lane_side": correct_lane_side,
+                "lane_mapping_source": lane_mapping_source,
             }
         self._record_perf(perf, "lane", lane_start)
 

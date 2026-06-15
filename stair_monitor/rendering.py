@@ -355,7 +355,6 @@ def draw_vietnamese_text(
             bold=bold,
         )
 
-
 # Ve panel nen trong suot + text tieng Viet.
 def draw_transparent_panel_with_vietnamese_text(
     frame,
@@ -444,7 +443,6 @@ def draw_label_with_background(
         text_drawer=text_drawer,
     )
 
-
 # Ve cac guide debug cua scene: vach giua, polygon cau thang, 2 line lan can.
 # Phan nay chi de quan sat/demo, khong duoc anh huong logic nhan dien.
 def draw_scene_guides(frame, config, analyzer):
@@ -505,7 +503,6 @@ def get_feet_point(box, keypoints):
 def get_motion_point(box, keypoints):
     features = extract_pose_features(keypoints, box)
     return features.get("motion_point")
-
 
 # Ve overlay cho tung nguoi sau khi analyzer da tra ket qua.
 # Ham nay chi hien thi demo, khong duoc can du vao logic nhan dien.
@@ -864,15 +861,24 @@ def build_debug_lines(analysis):
         f"W_SIDE:{analysis.get('wrist_side', 'UNKNOWN')}",
         f"W_SIDE_CORRECT:{analysis.get('wrist_side_correct', 'UNKNOWN')}",
         f"W_SIDE_WRONG:{analysis.get('wrist_side_wrong', 'UNKNOWN')}",
+        f"CORRECT_LINE_NAME:{analysis.get('correct_line_name', 'NONE')}",
         f"CORRECT_LINE:{analysis.get('correct_line_name', 'NONE')}",
         f"CORRECT_RULE:{analysis.get('correct_rule', 'NA')}",
+        f"WRONG_LINE_NAME:{analysis.get('wrong_line_name', 'NONE')}",
         f"WRONG_LINE:{analysis.get('wrong_line_name', 'NONE')}",
         f"WRONG_RULE:{analysis.get('wrong_rule', 'NA')}",
+        f"USE_CURRENT_CAMERA_ANGLE:{analysis.get('use_current_camera_angle', True)}",
+        f"CAMERA_ANGLE_PROFILE:{analysis.get('camera_angle_profile', 'CURRENT_CAMERA')}",
+        f"HANDRAIL_MAPPING_SOURCE:{analysis.get('handrail_mapping_source', 'CURRENT_CAMERA')}",
         f"DY:{int(analysis['dy'])}" if analysis.get("dy") is not None else "DY:NA",
+        f"DIRECTION_DY:{int(analysis['direction_dy'])}"
+        if analysis.get("direction_dy") is not None
+        else "DIRECTION_DY:NA",
         f"LANE_V:{int(analysis['lane_v'])}"
         if analysis.get("lane_v") is not None
         else "LANE_V:NA",
         f"DIR:{analysis.get('direction', 'NA')}",
+        f"DIRECTION_REASON:{analysis.get('direction_reason', 'UNKNOWN')}",
         f"INSIDE_STAIRS:{analysis.get('inside_stairs', False)}",
         f"INSIDE_FINAL:{analysis.get('inside_stairs', False)}",
         f"FEET_RELIABLE:{analysis.get('feet_reliable', False)}",
@@ -900,6 +906,12 @@ def build_debug_lines(analysis):
         f"LANE_DIRECTION:{analysis.get('lane_direction', 'ANALYZING')}",
         f"LANE_SOURCE:{analysis.get('lane_source', 'NO_LANE')}",
         f"LANE_REASON:{analysis.get('lane_reason', 'NA')}",
+        f"LANE_SIDE_VALUE:{int(analysis['lane_side_value'])}"
+        if analysis.get("lane_side_value") is not None
+        else "LANE_SIDE_VALUE:NA",
+        f"LANE_SIDE_LABEL:{analysis.get('lane_side_label', 'UNKNOWN')}",
+        f"CORRECT_LANE_SIDE:{analysis.get('correct_lane_side', 'UNKNOWN')}",
+        f"LANE_MAPPING_SOURCE:{analysis.get('lane_mapping_source', 'CURRENT_CAMERA')}",
         f"P_LANE_SOURCE:{analysis.get('p_lane_source', 'NONE')}",
         f"FOOT_LANE_SIDE:{int(analysis['foot_lane_side'])}"
         if analysis.get("foot_lane_side") is not None
@@ -929,6 +941,7 @@ def build_debug_lines(analysis):
         f"BACKWARD_RAW:{analysis.get('backward_raw', False)}",
         f"BACKWARD_HITS:{analysis.get('backward_hits', 0)}",
         f"BACKWARD_CONF:{analysis.get('backward_confirmed', False)}",
+        f"BACKWARD_MAPPING_SOURCE:{analysis.get('backward_mapping_source', 'CURRENT_CAMERA')}",
         f"BACKWARD_REASON:{analysis.get('backward_reason', 'UNKNOWN')}",
         f"STAND_RAW:{analysis.get('standing_raw', False)}",
         f"STAND_HITS:{analysis.get('standing_hits', 0)}",

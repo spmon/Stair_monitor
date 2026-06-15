@@ -8,6 +8,7 @@ from stair_monitor.settings import (
     HANDRAIL_SEGMENT_MAX_DISTANCE,
     LEFT_HANDRAIL_MAX_DISTANCE,
     RIGHT_HANDRAIL_MAX_DISTANCE,
+    USE_CURRENT_CAMERA_ANGLE,
     WRONG_SIDE_HANDRAIL_SEGMENT_MAX_DISTANCE,
 )
 
@@ -331,12 +332,32 @@ def get_best_wrist_for_handrail_by_rule_from_evidence(
 
 class HandrailAnalysisMixin:
     @staticmethod
-    # Mapping nay la diem quan trong cua logic vin tay:
-    # - UP  thi lan can dung la LEFT
-    # - DOWN thi lan can dung la RIGHT
-    # Dao mapping nay se lam sai "Khong Vin" va "Vin Sai Ben".
+    # Mapping lan can dung/sai ben duoc chon theo profile camera.
+    # - Current camera: giu nguyen logic cu
+    # - Bottom stair camera: DOWN dung LEFT, UP dung RIGHT
     def _get_handrail_targets(direction, left_line, right_line):
-        if direction == "UP":
+        if USE_CURRENT_CAMERA_ANGLE:
+            if direction == "UP":
+                return (
+                    left_line,
+                    "LEFT_HANDRAIL",
+                    LEFT_HANDRAIL_RULE,
+                    right_line,
+                    "RIGHT_HANDRAIL",
+                    RIGHT_HANDRAIL_RULE,
+                )
+            if direction == "DOWN":
+                return (
+                    right_line,
+                    "RIGHT_HANDRAIL",
+                    RIGHT_HANDRAIL_RULE,
+                    left_line,
+                    "LEFT_HANDRAIL",
+                    LEFT_HANDRAIL_RULE,
+                )
+            return None, "NONE", "NA", None, "NONE", "NA"
+
+        if direction == "DOWN":
             return (
                 left_line,
                 "LEFT_HANDRAIL",
@@ -345,7 +366,7 @@ class HandrailAnalysisMixin:
                 "RIGHT_HANDRAIL",
                 RIGHT_HANDRAIL_RULE,
             )
-        if direction == "DOWN":
+        if direction == "UP":
             return (
                 right_line,
                 "RIGHT_HANDRAIL",
