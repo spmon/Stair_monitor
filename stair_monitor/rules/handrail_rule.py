@@ -1,19 +1,16 @@
-from stair_monitor.geometry import (
+from stair_monitor.config.settings import SETTINGS
+from stair_monitor.vision.geometry import (
     extract_pose_features,
     get_side_name,
     point_to_segment_distance,
     signed_distance_to_line,
 )
-from stair_monitor.settings import (
-    HANDRAIL_SEGMENT_MAX_DISTANCE,
-    LEFT_HANDRAIL_MAX_DISTANCE,
-    RIGHT_HANDRAIL_MAX_DISTANCE,
-    USE_CURRENT_CAMERA_ANGLE,
-    WRONG_SIDE_HANDRAIL_SEGMENT_MAX_DISTANCE,
-)
 
 LEFT_HANDRAIL_RULE = "LEFT_HANDRAIL_RULE"
 RIGHT_HANDRAIL_RULE = "RIGHT_HANDRAIL_RULE"
+HAND_CLAIM_HOLD_HITS = 4
+HAND_CLAIM_CARRY_HITS = 4
+HAND_CLAIM_RESET_MISSES = 10
 
 
 # Body facing phuc vu logic di lui.
@@ -29,6 +26,19 @@ def is_back_to_camera(body_facing):
 # Danh gia 1 co tay so voi 1 line lan can.
 # Vua luu signed distance de biet dung phia nao, vua luu segment distance de tranh bat nham phan keo dai vo han.
 def _evaluate_wrist_against_line(wrist_point, line):
+    """Danh gia 1 wrist voi 1 line lan can.
+
+    Args:
+        wrist_point: Toa do wrist dang xet.
+        line: Hai diem dau mut cua line lan can.
+
+    Returns:
+        dict | None: dist, segment_dist, projection_t, side va point.
+
+    Notes:
+        dist la signed distance den line vo han. segment_dist la khoang cach den
+        chinh doan line. projection_t cho biet hinh chieu roi trong doan hay khong.
+    """
     if wrist_point is None or line is None or len(line) < 2:
         return None
 
@@ -50,6 +60,22 @@ def _evaluate_wrist_against_line(wrist_point, line):
 # Gom bang chung cho tung cap co tay - lan can trong 1 frame.
 # Bang chung nay se duoc tai su dung cho hold logic va debug, khong sua doi ket qua nhan dien.
 def compute_handrail_evidence(features, left_line, right_line, config=None):
+    """Tinh bang chung handrail frame-level cho ca 2 wrist va 2 line.
+
+    Args:
+        features: Dict pose feature da extract.
+        left_line: Line lan can trai.
+        right_line: Line lan can phai.
+        config: Bien de giu API, hien khong can dung them.
+
+    Returns:
+        dict: Tat ca pair wrist-line va cac field debug tong hop.
+
+    Notes:
+        LEFT_HANDRAIL_RULE / RIGHT_HANDRAIL_RULE chi mo ta quy tac vat ly cua
+        tung ben line. Viec ket luan dung ben hay sai ben theo direction se duoc
+        analyzer xu ly o buoc hold.
+    """
     _ = config
     left_wrist = features.get("left_wrist") if features is not None else None
     right_wrist = features.get("right_wrist") if features is not None else None
@@ -78,7 +104,9 @@ def compute_handrail_evidence(features, left_line, right_line, config=None):
         if pair is None:
             return "UNKNOWN"
         if rule == LEFT_HANDRAIL_RULE:
-            return bool(-LEFT_HANDRAIL_MAX_DISTANCE <= pair["dist"] <= -10)
+            return bool(
+                -SETTINGS.handrail.left_max_distance <= pair["dist"] <= -10
+            )
         if rule == RIGHT_HANDRAIL_RULE:
             return bool(10 <= pair["dist"] <= 40)
         return "UNKNOWN"
@@ -136,23 +164,60 @@ def compute_handrail_evidence(features, left_line, right_line, config=None):
     }
 
 
+def evaluate_holding_status(analyzer, hold_direction, handrail_evidence):
+    return analyzer._evaluate_hold_state(hold_direction, handrail_evidence)
+
+
+def evaluate_handrail(
+    analyzer,
+    track_id,
+    hold_direction,
+    keypoints,
+    features,
+):
+    handrail_evidence = compute_handrail_evidence(
+        features,
+        analyzer.left_line,
+        analyzer.right_line,
+    )
+    return analyzer._resolve_hold_and_claim_state(
+        track_id,
+        hold_direction,
+        handrail_evidence,
+        keypoints,
+        False,
+        "NONE",
+        features,
+    )
+
+
 # Chon co tay hop le gan lan can nhat theo rule cua chinh ben lan can do.
 # Rule o day la thuoc tinh vat ly cua line trai/phai, khong phai huong di chuyen UP/DOWN.
 def get_best_wrist_for_handrail_by_rule(keypoints, line, rule, segment_max_distance):
-    """
-    Check both wrists and choose the closest valid wrist to the handrail.
+    """Chon wrist hop le gan line nhat theo rule cua chinh line do.
 
-    Rule is fixed by physical handrail side, not motion direction.
+    Args:
+        keypoints: Mang keypoint YOLO pose.
+        line: Hai diem dau mut cua line lan can.
+        rule: LEFT_HANDRAIL_RULE hoac RIGHT_HANDRAIL_RULE.
+        segment_max_distance: Gioi han khoang cach toi chinh doan line.
 
     Returns:
-    - holding: True/False
-    - dist: signed distance to the handrail
-    - side: LEFT_SIDE / RIGHT_SIDE / ON_LINE / UNKNOWN
-    - wrist_name: LEFT_WRIST / RIGHT_WRIST / NONE
-    - wrist_point: chosen wrist point or None
-    - hold_status: TRUE / FALSE / UNKNOWN
-    - segment_dist: distance to the handrail segment
-    - projection_t: unclamped projection coefficient along the segment
+        tuple:
+            - holding: True/False
+            - dist: Signed distance toi line
+            - side: LEFT_SIDE / RIGHT_SIDE / ON_LINE / UNKNOWN
+            - wrist_name: LEFT_WRIST / RIGHT_WRIST / NONE
+            - wrist_point: Wrist duoc chon hoac None
+            - hold_status: TRUE / FALSE / UNKNOWN
+            - segment_dist: Khoang cach toi doan line
+            - projection_t: He so hinh chieu truoc khi clamp
+
+    Notes:
+        valid_d va valid_segment la 2 lop loc khac nhau:
+        - valid_d: wrist nam dung phia cua line va trong cua so dist.
+        - valid_segment: wrist co hinh chieu roi vao doan line va du gan doan.
+        Rule o day la quy tac vat ly cua line trai/phai, khong phai huong di.
     """
     if keypoints is None or len(keypoints) < 11 or len(line) < 2:
         return False, -999, "UNKNOWN", "NONE", None, "UNKNOWN", None, None
@@ -167,9 +232,10 @@ def get_best_wrist_for_handrail_by_rule(keypoints, line, rule, segment_max_dista
         )
         valid_d = False
         if rule == LEFT_HANDRAIL_RULE:
-            valid_d = -LEFT_HANDRAIL_MAX_DISTANCE <= d <= -10
+            valid_d = -SETTINGS.handrail.left_max_distance <= d <= -10
         elif rule == RIGHT_HANDRAIL_RULE:
-            valid_d = 0 <= d <= RIGHT_HANDRAIL_MAX_DISTANCE
+            valid_d = 0 <= d <= SETTINGS.handrail.right_max_distance
+        # projection_t trong [0, 1] nghia la hinh chieu roi vao trong chinh doan line.
         valid_segment = 0.0 <= projection_t <= 1.0 and (
             segment_dist <= segment_max_distance
         )
@@ -195,9 +261,9 @@ def get_best_wrist_for_handrail_by_rule(keypoints, line, rule, segment_max_dista
         )
         valid_d = False
         if rule == LEFT_HANDRAIL_RULE:
-            valid_d = -LEFT_HANDRAIL_MAX_DISTANCE <= d <= -10
+            valid_d = -SETTINGS.handrail.left_max_distance <= d <= -10
         elif rule == RIGHT_HANDRAIL_RULE:
-            valid_d = 0 <= d <= RIGHT_HANDRAIL_MAX_DISTANCE
+            valid_d = 0 <= d <= SETTINGS.handrail.right_max_distance
         valid_segment = 0.0 <= projection_t <= 1.0 and (
             segment_dist <= segment_max_distance
         )
@@ -258,6 +324,21 @@ def get_best_wrist_for_handrail_by_rule_from_evidence(
     rule,
     segment_max_distance,
 ):
+    """Dung lai handrail evidence da tinh san de chon wrist tot nhat.
+
+    Args:
+        handrail_evidence: Dict bang chung da tinh boi compute_handrail_evidence.
+        line_name: LEFT_HANDRAIL hoac RIGHT_HANDRAIL.
+        rule: LEFT_HANDRAIL_RULE hoac RIGHT_HANDRAIL_RULE.
+        segment_max_distance: Gioi han khoang cach toi doan line.
+
+    Returns:
+        tuple: Cung format voi get_best_wrist_for_handrail_by_rule.
+
+    Notes:
+        Ham nay tranh tinh lai signed distance va segment distance nhieu lan
+        trong cung 1 frame.
+    """
     # Ban dung lai evidence da tinh san de tranh tinh signed distance/segment distance lap lai.
     if handrail_evidence is None:
         return False, -999, "UNKNOWN", "NONE", None, "UNKNOWN", None, None
@@ -274,9 +355,9 @@ def get_best_wrist_for_handrail_by_rule_from_evidence(
         segment_dist = pair["segment_dist"]
         valid_d = False
         if rule == LEFT_HANDRAIL_RULE:
-            valid_d = -LEFT_HANDRAIL_MAX_DISTANCE <= dist <= -10
+            valid_d = -SETTINGS.handrail.left_max_distance <= dist <= -10
         elif rule == RIGHT_HANDRAIL_RULE:
-            valid_d = 0 <= dist <= RIGHT_HANDRAIL_MAX_DISTANCE
+            valid_d = 0 <= dist <= SETTINGS.handrail.right_max_distance
         valid_segment = 0.0 <= projection_t <= 1.0 and (
             segment_dist <= segment_max_distance
         )
@@ -331,12 +412,14 @@ def get_best_wrist_for_handrail_by_rule_from_evidence(
 
 
 class HandrailAnalysisMixin:
+    """Mixin gom logic hold raw, directional handrail va hand-claim."""
+
     @staticmethod
-    # Mapping lan can dung/sai ben duoc chon theo profile camera.
-    # - Current camera: giu nguyen logic cu
-    # - Bottom stair camera: DOWN dung LEFT, UP dung RIGHT
+        # Mapping lan can dung/sai ben duoc chon theo profile camera.
+        # - Current camera: giu nguyen logic cu
+        # - Bottom stair camera: DOWN dung LEFT, UP dung RIGHT
     def _get_handrail_targets(direction, left_line, right_line):
-        if USE_CURRENT_CAMERA_ANGLE:
+        if SETTINGS.camera.use_current_camera_angle:
             if direction == "UP":
                 return (
                     left_line,
@@ -380,6 +463,18 @@ class HandrailAnalysisMixin:
     @staticmethod
     # Quy doi ten wrist sang key trai/phai de xu ly claim tay.
     def _get_hand_key_from_wrist_name(wrist_name):
+        """Quy doi ten wrist debug sang key trai/phai.
+
+        Args:
+            wrist_name: LEFT_WRIST, RIGHT_WRIST hoac NONE.
+
+        Returns:
+            str | None: left, right hoac None.
+
+        Notes:
+            hand_claim_state luu theo left/right, con evidence debug luu theo
+            LEFT_WRIST/RIGHT_WRIST.
+        """
         if wrist_name == "LEFT_WRIST":
             return "left"
         if wrist_name == "RIGHT_WRIST":
@@ -397,6 +492,23 @@ class HandrailAnalysisMixin:
         role,
         segment_max_distance,
     ):
+        """Tao 1 ung vien hold cho 1 line muc tieu.
+
+        Args:
+            handrail_evidence: Dict bang chung wrist-line da tinh san.
+            line: Line lan can dang xet.
+            line_name: LEFT_HANDRAIL hoac RIGHT_HANDRAIL.
+            rule: Rule vat ly cua line do.
+            role: CORRECT, WRONG hoac ANY.
+            segment_max_distance: Gioi han khoang cach toi doan line.
+
+        Returns:
+            dict | None: Ung vien hold cho line nay.
+
+        Notes:
+            holding_raw o day van chi la bang chung frame-level. Hold final status
+            se duoc history trong analyzer/behavior_history xac nhan sau.
+        """
         if line is None or len(line) < 2:
             return None
 
@@ -433,6 +545,17 @@ class HandrailAnalysisMixin:
     @staticmethod
     # Gia tri rong de giu shape ket qua on dinh khi line hoac keypoint khong du.
     def _empty_hold_candidate(role):
+        """Tra ve 1 candidate rong de giu shape ket qua on dinh.
+
+        Args:
+            role: Vai tro candidate trong hold state.
+
+        Returns:
+            dict: Candidate rong.
+
+        Notes:
+            Shape on dinh giup result_builder/debug overlay de truy cap field.
+        """
         return {
             "role": role,
             "line_name": "NONE",
@@ -452,6 +575,19 @@ class HandrailAnalysisMixin:
     # UNKNOWN = du lieu chua du chac; NONE = co du lieu nhung khong thay bang chung vin.
     # WRONG_SIDE = co vin nhung vin nham ben; CORRECT = co bang chung vin dung ben.
     def _summarize_hold_candidates(self, candidates, directional_hold):
+        """Tong hop nhieu candidate thanh 1 ket luan hold raw cua frame.
+
+        Args:
+            candidates: Danh sach candidate da tinh cho cac line lien quan.
+            directional_hold: True neu da biet line nao dung ben/sai ben.
+
+        Returns:
+            dict: Hold info frame-level va du lieu debug chi tiet.
+
+        Notes:
+            correct/wrong handrail chi co y nghia day du khi da biet direction.
+            Truoc do chi nen ket luan co vin bat ky lan can nao hay khong.
+        """
         hold_info = {
             "holding_raw": False,
             "hold_raw_status": "UNKNOWN",
@@ -616,6 +752,20 @@ class HandrailAnalysisMixin:
         return hold_info
 
     def _evaluate_hold_state(self, *args):
+        """Danh gia hold raw theo direction neu co, hoac theo any-rail neu chua co.
+
+        Args:
+            *args: Ho tro 2 dang goi:
+                - (hold_direction, handrail_evidence)
+                - (keypoints, hold_direction, left_line, right_line)
+
+        Returns:
+            dict: Hold state frame-level.
+
+        Notes:
+            UNKNOWN/IDLE khong duoc tu dong suy ra "Khong Vin". Khi chua biet
+            direction, ham nay chi duoc phep ket luan co/khong co vin mot rail.
+        """
         # Ham nay danh gia hold theo 2 che do:
         # - Co direction: phan biet ro lan can dung/sai ben.
         # - Chua co direction: chi duoc ket luan co/khong co vin bat ky lan can nao.
@@ -659,7 +809,7 @@ class HandrailAnalysisMixin:
                         correct_line_name,
                         correct_rule,
                         "CORRECT",
-                        HANDRAIL_SEGMENT_MAX_DISTANCE,
+                        SETTINGS.handrail.segment_max_distance,
                     )
                 )
 
@@ -671,7 +821,7 @@ class HandrailAnalysisMixin:
                         wrong_line_name,
                         wrong_rule,
                         "WRONG",
-                        WRONG_SIDE_HANDRAIL_SEGMENT_MAX_DISTANCE,
+                        SETTINGS.handrail.wrong_side_segment_max_distance,
                     )
                 )
 
@@ -690,7 +840,7 @@ class HandrailAnalysisMixin:
                     "LEFT_HANDRAIL",
                     LEFT_HANDRAIL_RULE,
                     "ANY",
-                    HANDRAIL_SEGMENT_MAX_DISTANCE,
+                    SETTINGS.handrail.segment_max_distance,
                 )
             )
 
@@ -702,7 +852,7 @@ class HandrailAnalysisMixin:
                     "RIGHT_HANDRAIL",
                     RIGHT_HANDRAIL_RULE,
                     "ANY",
-                    HANDRAIL_SEGMENT_MAX_DISTANCE,
+                    SETTINGS.handrail.segment_max_distance,
                 )
             )
         return self._summarize_hold_candidates(
@@ -713,6 +863,19 @@ class HandrailAnalysisMixin:
     # Claim CARRY loai bo tay do khoi hold de tranh 1 tay vua "vin" vua "mang vac".
     # Hold la logic doc lap, carry chi duoc anh huong qua lop claim nay.
     def _apply_hand_claim_to_hold_state(self, hold_state, hand_claim_state):
+        """Loai candidate hold o tay da duoc claim CARRY.
+
+        Args:
+            hold_state: Hold raw state truoc khi ap claim.
+            hand_claim_state: Claim state hien tai cua tung tay.
+
+        Returns:
+            dict: Hold state sau khi da bo candidate bi claim CARRY.
+
+        Notes:
+            Claim nay chi giam xung dot bang chung. Viec canh bao final van do
+            history hold cua analyzer xac nhan.
+        """
         if hand_claim_state is None:
             hand_claim_state = {}
 
@@ -748,6 +911,145 @@ class HandrailAnalysisMixin:
         return claimed_hold_state
 
     @staticmethod
+    def _new_hand_claim_entry():
+        return {
+            "claim": None,
+            "hold_hits": 0,
+            "carry_hits": 0,
+            "misses": 0,
+        }
+
+    def _get_hand_claim_state(self, track_id):
+        if track_id not in self.hand_claim_state:
+            self.hand_claim_state[track_id] = {
+                "left": self._new_hand_claim_entry(),
+                "right": self._new_hand_claim_entry(),
+            }
+        return self.hand_claim_state[track_id]
+
+    def _update_hand_claim_state(
+        self,
+        track_id,
+        left_hold_raw,
+        right_hold_raw,
+        left_carry_raw,
+        right_carry_raw,
+    ):
+        claim_state = self._get_hand_claim_state(track_id)
+        hand_raw_inputs = {
+            "left": (left_hold_raw, left_carry_raw),
+            "right": (right_hold_raw, right_carry_raw),
+        }
+
+        for hand_name, (hold_raw, carry_raw) in hand_raw_inputs.items():
+            hand_state = claim_state[hand_name]
+            hand_state["hold_hits"] = (
+                min(hand_state["hold_hits"] + 1, HAND_CLAIM_HOLD_HITS)
+                if hold_raw
+                else max(hand_state["hold_hits"] - 1, 0)
+            )
+            hand_state["carry_hits"] = (
+                min(hand_state["carry_hits"] + 1, HAND_CLAIM_CARRY_HITS)
+                if carry_raw
+                else max(hand_state["carry_hits"] - 1, 0)
+            )
+
+            if not hold_raw and not carry_raw:
+                hand_state["misses"] += 1
+            else:
+                hand_state["misses"] = 0
+
+            if hand_state["misses"] >= HAND_CLAIM_RESET_MISSES:
+                claim_state[hand_name] = self._new_hand_claim_entry()
+                continue
+
+            if hand_state["claim"] is not None:
+                continue
+
+            hold_ready = hand_state["hold_hits"] >= HAND_CLAIM_HOLD_HITS
+            carry_ready = hand_state["carry_hits"] >= HAND_CLAIM_CARRY_HITS
+            if hold_ready and carry_ready:
+                hand_state["claim"] = (
+                    "HOLD"
+                    if hand_state["hold_hits"] >= hand_state["carry_hits"]
+                    else "CARRY"
+                )
+            elif hold_ready:
+                hand_state["claim"] = "HOLD"
+            elif carry_ready:
+                hand_state["claim"] = "CARRY"
+
+        return claim_state
+
+    def _resolve_hold_and_claim_state(
+        self,
+        track_id,
+        hold_direction,
+        handrail_evidence,
+        keypoints,
+        holding_raw,
+        best_wrist,
+        features,
+    ):
+        hold_state_before_claim = self._evaluate_hold_state(
+            hold_direction,
+            handrail_evidence,
+        )
+        carry_pose = self._get_carry_pose(
+            keypoints,
+            holding_raw,
+            best_wrist,
+            features=features,
+        )
+        hand_claim_state = self._update_hand_claim_state(
+            track_id,
+            hold_state_before_claim["left_hold_raw"],
+            hold_state_before_claim["right_hold_raw"],
+            carry_pose["left_carry_raw_before_claim"],
+            carry_pose["right_carry_raw_before_claim"],
+        )
+        hold_state = self._apply_hand_claim_to_hold_state(
+            hold_state_before_claim,
+            hand_claim_state,
+        )
+        carry_pose = self._apply_hand_claim_to_carry_pose(
+            carry_pose,
+            hand_claim_state,
+        )
+        return hold_state, carry_pose, hand_claim_state
+
+    @staticmethod
+    def _copy_hold_state_fields(hold_state):
+        return (
+            hold_state["holding_raw"],
+            hold_state["hold_raw_status"],
+            hold_state["holding_correct_raw"],
+            hold_state["holding_wrong_raw"],
+            hold_state["hold_status_correct"],
+            hold_state["hold_status_wrong"],
+            hold_state["dist_correct"],
+            hold_state["dist_wrong"],
+            hold_state["seg_dist_correct"],
+            hold_state["seg_dist_wrong"],
+            hold_state["t_correct"],
+            hold_state["t_wrong"],
+            hold_state["wrist_side_correct"],
+            hold_state["wrist_side_wrong"],
+            hold_state["best_wrist_correct"],
+            hold_state["best_wrist_wrong"],
+            hold_state["best_wrist_correct_point"],
+            hold_state["best_wrist_wrong_point"],
+            hold_state["correct_line_name"],
+            hold_state["wrong_line_name"],
+            hold_state["correct_rule"],
+            hold_state["wrong_rule"],
+            hold_state["best_wrist"],
+            hold_state["best_wrist_point"],
+            hold_state["dist_wrist"],
+            hold_state["wrist_side"],
+        )
+
+    @staticmethod
     # Chon diem debug chinh de ve overlay va in thong tin khoang cach cho nguoi de doc.
     def _select_primary_hold_debug(
         hold_raw_status,
@@ -760,6 +1062,25 @@ class HandrailAnalysisMixin:
         dist_wrong,
         wrist_side_wrong,
     ):
+        """Chon wrist/chi so debug chinh de ve overlay.
+
+        Args:
+            hold_raw_status: Trang thai hold raw cua frame hien tai.
+            best_wrist_correct: Wrist tot nhat cho line dung ben.
+            best_wrist_correct_point: Toa do wrist tot nhat dung ben.
+            dist_correct: Signed distance cho line dung ben.
+            wrist_side_correct: Nhan side cua wrist voi line dung ben.
+            best_wrist_wrong: Wrist tot nhat cho line sai ben.
+            best_wrist_wrong_point: Toa do wrist tot nhat sai ben.
+            dist_wrong: Signed distance cho line sai ben.
+            wrist_side_wrong: Nhan side cua wrist voi line sai ben.
+
+        Returns:
+            tuple: (best_wrist, best_point, dist, side)
+
+        Notes:
+            Ham nay chi chon diem de debug/overlay, khong doi ket qua nhan dien.
+        """
         if hold_raw_status == "CORRECT":
             return (
                 best_wrist_correct,

@@ -2,11 +2,26 @@ import math
 
 import numpy as np
 
-from stair_monitor.settings import BACKWARD_MIN_VALID_EVIDENCE
+from stair_monitor.common.types import BBox, BodyFacingLabel, Point, PoseFeatures
+from stair_monitor.config.settings import SETTINGS
 
 
 # Kiem tra keypoint co du tin cay de dung cho cac logic suy luan hay khong.
 def _keypoint_is_visible(keypoints, idx, conf_th):
+    """Kiem tra 1 keypoint co du tin cay de duoc su dung hay khong.
+
+    Args:
+        keypoints: Mang keypoint YOLO pose cua 1 nguoi.
+        idx: Chi so keypoint can kiem tra.
+        conf_th: Nguong confidence toi thieu.
+
+    Returns:
+        bool: True neu keypoint ton tai va vuot nguong confidence.
+
+    Notes:
+        Day la lop loc dau vao co ban de cac logic phia sau khong phai lap lai
+        viec check do dai mang va confidence.
+    """
     return (
         keypoints is not None
         and len(keypoints) > idx
@@ -17,6 +32,19 @@ def _keypoint_is_visible(keypoints, idx, conf_th):
 
 # Lay toa do pixel cua keypoint neu do tin cay vuot nguong.
 def _get_keypoint_point(keypoints, idx, conf_th=0.5):
+    """Lay toa do pixel cua keypoint neu co the tin duoc.
+
+    Args:
+        keypoints: Mang keypoint YOLO pose cua 1 nguoi.
+        idx: Chi so keypoint can lay.
+        conf_th: Nguong confidence toi thieu.
+
+    Returns:
+        tuple | None: (x, y) neu keypoint hop le, nguoc lai la None.
+
+    Notes:
+        Ham nay la wrapper cua _keypoint_is_visible de dong nhat cach lay point.
+    """
     if not _keypoint_is_visible(keypoints, idx, conf_th):
         return None
     return (int(keypoints[idx][0]), int(keypoints[idx][1]))
@@ -24,6 +52,18 @@ def _get_keypoint_point(keypoints, idx, conf_th=0.5):
 
 # Midpoint duoc dung de tao cac diem dai dien on dinh hon so voi dung 1 keypoint le.
 def _midpoint(point_a, point_b):
+    """Tinh midpoint giua 2 diem.
+
+    Args:
+        point_a: Diem thu nhat.
+        point_b: Diem thu hai.
+
+    Returns:
+        tuple | None: Trung diem neu du 2 diem, nguoc lai la None.
+
+    Notes:
+        Midpoint giup tao diem dai dien on dinh hon cho feet, hip, shoulder.
+    """
     if point_a is None or point_b is None:
         return None
     return (
@@ -33,6 +73,17 @@ def _midpoint(point_a, point_b):
 
 
 def _average_points(points):
+    """Lay trung binh toa do cua cac diem hop le.
+
+    Args:
+        points: Danh sach diem co the chua None.
+
+    Returns:
+        tuple | None: Diem trung binh cua cac diem hop le.
+
+    Notes:
+        Ham nay thuong dung cho head_center khi mot so keypoint mat tam thoi.
+    """
     valid_points = [point for point in points if point is not None]
     if not valid_points:
         return None
@@ -44,6 +95,19 @@ def _average_points(points):
 
 # Tinh goc tai diem b de suy luan tu the tay trong logic carry.
 def calculate_angle(a, b, c):
+    """Tinh goc ABC theo do.
+
+    Args:
+        a: Diem thu nhat.
+        b: Dinh cua goc.
+        c: Diem thu ba.
+
+    Returns:
+        float: Gia tri goc theo do.
+
+    Notes:
+        Ham nay duoc carry logic tai su dung de suy ra tay dang gap hay duoi.
+    """
     a, b, c = np.array(a), np.array(b), np.array(c)
     ba, bc = a - b, c - b
     cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-6)
@@ -59,11 +123,18 @@ def _calculate_arm_angle_from_points(shoulder, elbow, wrist):
 # signed distance dung de biet co tay dang nam dung phia nao cua line lan can.
 # Dau am/duong phu thuoc thu tu 2 diem line trong file config, vi vay khong duoc dao tuy tien.
 def signed_distance_to_line(pt, line_pts):
-    """
-    Compute the signed distance from a point to a 2-point line.
-    D < 0: point is on one side of the line, treated here as LEFT_SIDE.
-    D > 0: point is on the other side of the line, treated here as RIGHT_SIDE.
-    Note: the sign depends on the order of the 2 line points in JSON.
+    """Tinh signed distance tu diem toi duong thang 2 diem.
+
+    Args:
+        pt: Diem can tinh khoang cach.
+        line_pts: Hai diem tao thanh line tham chieu.
+
+    Returns:
+        float: Signed distance. Am/duong cho biet diem nam ben nao cua line.
+
+    Notes:
+        Dau cua khoang cach phu thuoc thu tu 2 diem line trong JSON. Vi vay
+        mapping LEFT/RIGHT khong duoc sua tuy tien o file config hoac code.
     """
     if len(line_pts) < 2:
         return 9999
@@ -84,13 +155,22 @@ def signed_distance_to_line(pt, line_pts):
 # Khoang cach toi doan thang dung de tranh bat nham phan keo dai vo han cua line.
 # Gia tri t cho biet hinh chieu roi vao trong doan [0, 1] hay nam ngoai doan.
 def point_to_segment_distance(p, a, b):
-    """
-    Compute the distance from point p to the line segment ab.
+    """Tinh khoang cach tu diem toi doan thang.
+
+    Args:
+        p: Diem can tinh khoang cach.
+        a: Dau mut thu nhat cua doan.
+        b: Dau mut thu hai cua doan.
 
     Returns:
-    - dist: Euclidean distance from p to the segment
-    - t: projection coefficient before clamping
-    - closest: closest point on the segment
+        tuple:
+            - dist: Khoang cach Euclidean toi doan.
+            - t: He so hinh chieu truoc khi clamp.
+            - closest: Diem gan nhat tren doan.
+
+    Notes:
+        t cho biet hinh chieu roi vao trong doan [0, 1] hay nam ngoai doan.
+        Dieu nay giup handrail logic tranh bat nham phan keo dai vo han.
     """
     p = np.array(p, dtype=np.float32)
     a = np.array(a, dtype=np.float32)
@@ -158,6 +238,19 @@ def _build_pair_body_facing_evidence(
 
 
 def _build_head_body_facing_evidence(keypoints, conf_th=0.5):
+    """Xay bang chung body-facing tu cac keypoint dau/mat.
+
+    Args:
+        keypoints: Mang keypoint YOLO pose.
+        conf_th: Nguong confidence toi thieu.
+
+    Returns:
+        dict: Bang chung head-facing o muc frame-level.
+
+    Notes:
+        Ham nay chi vote FRONT khi thay du du mat/mui/tai. Mat keypoint dau
+        khong duoc tu dong xem la bang chung BACK.
+    """
     nose = _get_keypoint_point(keypoints, 0, conf_th)
     left_eye = _get_keypoint_point(keypoints, 1, conf_th)
     right_eye = _get_keypoint_point(keypoints, 2, conf_th)
@@ -195,6 +288,18 @@ def _build_head_body_facing_evidence(keypoints, conf_th=0.5):
 
 
 def compute_body_facing_evidence(keypoints, conf_th=0.5):
+    """Tong hop bang chung body-facing tu hip, shoulder, ear va head.
+
+    Args:
+        keypoints: Mang keypoint YOLO pose.
+        conf_th: Nguong confidence toi thieu.
+
+    Returns:
+        dict: Nhieu field debug cho body_facing va ly do ket luan.
+
+    Notes:
+        Ket qua nay duoc backward logic dung de suy ra Di Lui, khong phai lane.
+    """
     if keypoints is None:
         return {
             "body_facing": "UNKNOWN",
@@ -238,7 +343,7 @@ def compute_body_facing_evidence(keypoints, conf_th=0.5):
         body_facing = "UNKNOWN"
         confidence = 0.0
         reason = "NO_VALID_EVIDENCE"
-    elif valid_evidence_count < BACKWARD_MIN_VALID_EVIDENCE:
+    elif valid_evidence_count < SETTINGS.backward.min_valid_evidence:
         body_facing = "UNKNOWN"
         confidence = 0.0
         reason = "NOT_ENOUGH_VALID_EVIDENCE"
@@ -271,6 +376,18 @@ def compute_body_facing_evidence(keypoints, conf_th=0.5):
 
 # Uoc luong huong than/mat de phuc vu logic di lui, khong dung de tinh lane.
 def estimate_body_facing(keypoints, conf_th=0.5):
+    """Rut gon ket qua body_facing thanh 1 label duy nhat.
+
+    Args:
+        keypoints: Mang keypoint YOLO pose.
+        conf_th: Nguong confidence toi thieu.
+
+    Returns:
+        str: FRONT_TO_CAMERA, BACK_TO_CAMERA hoac UNKNOWN.
+
+    Notes:
+        Ham nay chi la wrapper nhe quanh compute_body_facing_evidence.
+    """
     return compute_body_facing_evidence(keypoints, conf_th).get(
         "body_facing", "UNKNOWN"
     )
@@ -278,8 +395,17 @@ def estimate_body_facing(keypoints, conf_th=0.5):
 
 # Xac dinh tay trai dang nam ben trai hay ben phai anh de debug body orientation.
 def estimate_arm_side_order(keypoints, conf_th=0.5):
-    """
-    Estimate whether the left arm appears on the left or right side of the image.
+    """Uoc luong tay trai dang xuat hien ben nao trong anh.
+
+    Args:
+        keypoints: Mang keypoint YOLO pose.
+        conf_th: Nguong confidence toi thieu.
+
+    Returns:
+        str: LEFT_ARM_ON_IMAGE_LEFT, LEFT_ARM_ON_IMAGE_RIGHT hoac UNKNOWN.
+
+    Notes:
+        Day la field debug ho tro doc body orientation, khong dung de tinh lane.
     """
     left_arm_x = [
         keypoints[idx][0]
@@ -305,8 +431,170 @@ def estimate_arm_side_order(keypoints, conf_th=0.5):
     return "UNKNOWN"
 
 
+VIRTUAL_FOOT_BACK_SCALE = 1.3
+SHOULDER_WIDTH_TO_HEIGHT_SCALE = 2.5
+MIN_BBOX_HEIGHT_FOR_BOTTOM_FOOT = 150
+SMALL_BBOX_FALLBACK_HEIGHT = 150
+
+
+def _center_or_single(point_a: Point | None, point_b: Point | None) -> Point | None:
+    if point_a is not None and point_b is not None:
+        return _midpoint(point_a, point_b)
+    return point_a or point_b
+
+
+def _select_real_ankle_feet_point(
+    left_ankle: Point | None,
+    right_ankle: Point | None,
+) -> tuple[Point | None, str, bool]:
+    if left_ankle is not None and right_ankle is not None:
+        return _midpoint(left_ankle, right_ankle), "REAL_BOTH_ANKLES", True
+    if left_ankle is not None:
+        return left_ankle, "REAL_LEFT_ANKLE", True
+    if right_ankle is not None:
+        return right_ankle, "REAL_RIGHT_ANKLE", True
+    return None, "NO_REAL_FEET", False
+
+
+def _estimate_feet_from_shoulder_and_hip(
+    left_shoulder: Point | None,
+    right_shoulder: Point | None,
+    left_hip: Point | None,
+    right_hip: Point | None,
+) -> tuple[Point | None, str, bool]:
+    shoulder_point = _center_or_single(left_shoulder, right_shoulder)
+    hip_point = _center_or_single(left_hip, right_hip)
+    if shoulder_point is None or hip_point is None:
+        return None, "NO_SHOULDER_HIP_VIRTUAL_FEET", False
+
+    back_len_y = abs(hip_point[1] - shoulder_point[1])
+    virtual_y = int(hip_point[1] + back_len_y * VIRTUAL_FOOT_BACK_SCALE)
+    return (
+        (int(hip_point[0]), virtual_y),
+        "VIRTUAL_FROM_SHOULDER_HIP",
+        False,
+    )
+
+
+def _estimate_feet_from_two_shoulders(
+    left_shoulder: Point | None,
+    right_shoulder: Point | None,
+    body_facing: BodyFacingLabel,
+) -> tuple[Point | None, str, bool]:
+    if left_shoulder is None or right_shoulder is None:
+        return None, "NO_TWO_SHOULDER_VIRTUAL_FEET", False
+    if body_facing not in ("FRONT_TO_CAMERA", "BACK_TO_CAMERA"):
+        return None, "SKIPPED_BODY_NOT_FRONT_BACK", False
+
+    shoulder_center = _midpoint(left_shoulder, right_shoulder)
+    if shoulder_center is None:
+        return None, "NO_TWO_SHOULDER_VIRTUAL_FEET", False
+
+    shoulder_width = math.hypot(
+        right_shoulder[0] - left_shoulder[0],
+        right_shoulder[1] - left_shoulder[1],
+    )
+    estimated_height = shoulder_width * SHOULDER_WIDTH_TO_HEIGHT_SCALE
+    return (
+        (
+            int(shoulder_center[0]),
+            int(shoulder_center[1] + estimated_height),
+        ),
+        "VIRTUAL_FROM_TWO_SHOULDERS",
+        False,
+    )
+
+
+def _estimate_feet_from_bbox(
+    bbox: BBox | None,
+) -> tuple[Point | None, str, bool]:
+    if bbox is None:
+        return None, "NO_FEET_POINT", False
+
+    x1, y1, x2, y2 = bbox
+    bbox_height = int(y2 - y1)
+    bbox_center_x = int((x1 + x2) / 2)
+    if bbox_height < MIN_BBOX_HEIGHT_FOR_BOTTOM_FOOT:
+        return (
+            (bbox_center_x, int(y1 + SMALL_BBOX_FALLBACK_HEIGHT)),
+            "VIRTUAL_FROM_SMALL_BBOX_TOP_PLUS_HEIGHT",
+            False,
+        )
+
+    return (
+        (bbox_center_x, int(y2)),
+        "VIRTUAL_FROM_BBOX_BOTTOM",
+        False,
+    )
+
+
+def _select_feet_point(
+    left_ankle: Point | None,
+    right_ankle: Point | None,
+    left_shoulder: Point | None,
+    right_shoulder: Point | None,
+    left_hip: Point | None,
+    right_hip: Point | None,
+    bbox: BBox | None,
+    body_facing: BodyFacingLabel,
+) -> tuple[Point | None, str, bool]:
+    feet_point, feet_point_source, feet_reliable = _select_real_ankle_feet_point(
+        left_ankle,
+        right_ankle,
+    )
+    if feet_point is not None:
+        return feet_point, feet_point_source, feet_reliable
+
+    feet_point, feet_point_source, feet_reliable = (
+        _estimate_feet_from_shoulder_and_hip(
+            left_shoulder,
+            right_shoulder,
+            left_hip,
+            right_hip,
+        )
+    )
+    if feet_point is not None:
+        return feet_point, feet_point_source, feet_reliable
+
+    feet_point, feet_point_source, feet_reliable = _estimate_feet_from_two_shoulders(
+        left_shoulder,
+        right_shoulder,
+        body_facing,
+    )
+    if feet_point is not None:
+        return feet_point, feet_point_source, feet_reliable
+
+    return _estimate_feet_from_bbox(bbox)
+
+
+def _compare_feet_points(
+    real_feet_point: Point | None,
+    candidate_feet_point: Point | None,
+) -> tuple[int | None, int | None, float | None, bool]:
+    if real_feet_point is None or candidate_feet_point is None:
+        return None, None, None, False
+
+    dx = int(candidate_feet_point[0] - real_feet_point[0])
+    dy = int(candidate_feet_point[1] - real_feet_point[1])
+    return dx, dy, float(math.hypot(dx, dy)), True
+
+
 # Tao torso box tu shoulder va hip de carry check vung truoc nguc/bung.
 def _get_torso_box_from_features(features, margin_x=40, margin_y=40, margin_bottom=90):
+    """Dung pose feature de tao torso box xap xi.
+
+    Args:
+        features: Dict pose feature da extract.
+        margin_x: Margin ngang cu duoc giu de giu API.
+        margin_y: Margin doc cu duoc giu de giu API.
+        margin_bottom: Margin duoi cu duoc giu de giu API.
+
+    Returns:
+        tuple | None: (x1, y1, x2, y2) neu du shoulder va hip.
+
+    Notes:
+        Torso box nay chu yeu phuc vu carry logic, khong phai handrail.
+    """
     torso_points = [
         features.get("left_shoulder"),
         features.get("right_shoulder"),
@@ -331,8 +619,29 @@ def _get_torso_box_from_features(features, margin_x=40, margin_y=40, margin_bott
 # p_lane uu tien midpoint hai mat ca chan; neu thieu thi fallback bbox bottom center.
 # p_motion uu tien tam hong vi on dinh hon chan khi buoc cau thang; neu thieu moi fallback bbox center.
 # Hai diem nay phuc vu 2 logic khac nhau: p_lane cho sai lan, p_motion cho direction/standing.
-def extract_pose_features(keypoints, bbox):
-    bbox_tuple = tuple(int(value) for value in bbox) if bbox is not None else None
+def extract_pose_features(keypoints, bbox) -> PoseFeatures:
+    """Gom cac pose feature co the tai su dung o nhieu logic.
+
+    Args:
+        keypoints: Mang keypoint YOLO pose cua 1 nguoi.
+        bbox: Bounding box cua nguoi do trong frame hien tai.
+
+    Returns:
+        dict: Bo feature chuan hoa duoc dung boi analyzer, carry va rendering.
+
+    Notes:
+        p_lane uu tien feet_point vi lane can vi tri chan that. p_motion uu tien
+        hip_center vi on dinh hon khi buoc cau thang. Bbox fallback chi la
+        fallback, khong nen tin hon keypoint that.
+    """
+    bbox_tuple: BBox | None = None
+    if bbox is not None and len(bbox) >= 4:
+        bbox_tuple = (
+            int(bbox[0]),
+            int(bbox[1]),
+            int(bbox[2]),
+            int(bbox[3]),
+        )
 
     nose = _get_keypoint_point(keypoints, 0)
     left_eye = _get_keypoint_point(keypoints, 1)
@@ -364,48 +673,77 @@ def extract_pose_features(keypoints, bbox):
 
     hip_center = _midpoint(left_hip, right_hip)
     shoulder_center = _midpoint(left_shoulder, right_shoulder)
+    # head_center uu tien tong hop nhieu keypoint dau de giam anh huong keypoint le.
     head_center = _average_points([nose, left_eye, right_eye, left_ear, right_ear])
     body_facing_evidence = compute_body_facing_evidence(keypoints)
+    bbox_height = (
+        int(bbox_tuple[3] - bbox_tuple[1]) if bbox_tuple is not None else None
+    )
 
     ankle_valid_count = int(left_ankle is not None) + int(right_ankle is not None)
+    real_feet_point, real_feet_source, _ = _select_real_ankle_feet_point(
+        left_ankle,
+        right_ankle,
+    )
+    (
+        virtual_feet_from_shoulder_hip,
+        virtual_feet_from_shoulder_hip_source,
+        _,
+    ) = _estimate_feet_from_shoulder_and_hip(
+        left_shoulder,
+        right_shoulder,
+        left_hip,
+        right_hip,
+    )
+    (
+        virtual_feet_from_two_shoulders,
+        virtual_feet_from_two_shoulders_source,
+        _,
+    ) = _estimate_feet_from_two_shoulders(
+        left_shoulder,
+        right_shoulder,
+        body_facing_evidence["body_facing"],
+    )
 
+    # left_ankle/right_ankle la dau vao uu tien nhat cho lane va inside stairs.
     # feet_point dai dien vi tri nguoi so voi vach giua de xet sai lan.
-    if left_ankle is not None and right_ankle is not None:
-        feet_point = _midpoint(left_ankle, right_ankle)
-        inside_feet_point = feet_point
-    else:
-        feet_point = left_ankle or right_ankle or bbox_bottom_center
-        inside_feet_point = left_ankle or right_ankle
-    # Buoc dau chi xem chan "dang tin" khi thay duoc it nhat 1 ankle.
-    feet_reliable = ankle_valid_count > 0
+    feet_point, feet_point_source, feet_reliable = _select_feet_point(
+        left_ankle,
+        right_ankle,
+        left_shoulder,
+        right_shoulder,
+        left_hip,
+        right_hip,
+        bbox_tuple,
+        body_facing_evidence["body_facing"],
+    )
+    inside_feet_point = feet_point
+    inside_feet_point_source = feet_point_source
+    selected_feet_point = feet_point
+    selected_feet_source = feet_point_source
+    (
+        shoulder_hip_feet_dx,
+        shoulder_hip_feet_dy,
+        shoulder_hip_feet_distance,
+        shoulder_hip_feet_compare_available,
+    ) = _compare_feet_points(real_feet_point, virtual_feet_from_shoulder_hip)
+    (
+        two_shoulders_feet_dx,
+        two_shoulders_feet_dy,
+        two_shoulders_feet_distance,
+        two_shoulders_feet_compare_available,
+    ) = _compare_feet_points(real_feet_point, virtual_feet_from_two_shoulders)
 
+    # hip_center/shoulder_center/torso_box giup carry va motion su dung cung 1 bo moc.
     # motion_point dai dien cho chuyen dong tong the cua nguoi.
     # Khong uu tien chan vi chan de nhieu khi pose rung hoac buoc buoc tren cau thang.
     motion_point = hip_center or bbox_center or bbox_bottom_center
-    bbox_upper_center = None
-    if bbox_tuple is not None and len(bbox_tuple) >= 4:
-        bbox_upper_center = (
-            int((bbox_tuple[0] + bbox_tuple[2]) / 2),
-            int(bbox_tuple[1] + 0.25 * (bbox_tuple[3] - bbox_tuple[1])),
-        )
-
-    upper_point = None
-    upper_point_source = "NA"
-    if head_center is not None:
-        upper_point = head_center
-        upper_point_source = "HEAD_CENTER"
-    elif shoulder_center is not None:
-        upper_point = shoulder_center
-        upper_point_source = "SHOULDER_CENTER"
-    elif bbox_upper_center is not None:
-        upper_point = bbox_upper_center
-        upper_point_source = "BBOX_UPPER_CENTER"
-
-    features = {
+    # bbox_center/bbox_bottom_center chi la fallback khi keypoint bi mat.
+    features: PoseFeatures = {
         "bbox": bbox_tuple,
         "bbox_center": bbox_center,
         "bbox_bottom_center": bbox_bottom_center,
-        "bbox_upper_center": bbox_upper_center,
+        "bbox_height": bbox_height,
         "nose": nose,
         "left_eye": left_eye,
         "right_eye": right_eye,
@@ -424,11 +762,29 @@ def extract_pose_features(keypoints, bbox):
         "hip_center": hip_center,
         "head_center": head_center,
         "shoulder_center": shoulder_center,
+        # motion_point la p_motion de analyzer tinh direction/backward/standing.
         "motion_point": motion_point,
+        # feet_point la p_lane de analyzer tinh inside/lane.
         "feet_point": feet_point,
+        "feet_point_source": feet_point_source,
+        "real_feet_point": real_feet_point,
+        "real_feet_source": real_feet_source,
+        "virtual_feet_from_shoulder_hip": virtual_feet_from_shoulder_hip,
+        "virtual_feet_from_shoulder_hip_source": virtual_feet_from_shoulder_hip_source,
+        "virtual_feet_from_two_shoulders": virtual_feet_from_two_shoulders,
+        "virtual_feet_from_two_shoulders_source": virtual_feet_from_two_shoulders_source,
+        "selected_feet_point": selected_feet_point,
+        "selected_feet_source": selected_feet_source,
+        "shoulder_hip_feet_dx": shoulder_hip_feet_dx,
+        "shoulder_hip_feet_dy": shoulder_hip_feet_dy,
+        "shoulder_hip_feet_distance": shoulder_hip_feet_distance,
+        "shoulder_hip_feet_compare_available": shoulder_hip_feet_compare_available,
+        "two_shoulders_feet_dx": two_shoulders_feet_dx,
+        "two_shoulders_feet_dy": two_shoulders_feet_dy,
+        "two_shoulders_feet_distance": two_shoulders_feet_distance,
+        "two_shoulders_feet_compare_available": two_shoulders_feet_compare_available,
         "inside_feet_point": inside_feet_point,
-        "upper_point": upper_point,
-        "upper_point_source": upper_point_source,
+        "inside_feet_point_source": inside_feet_point_source,
         "ankle_valid_count": ankle_valid_count,
         "feet_reliable": feet_reliable,
         "left_arm_angle": _calculate_arm_angle_from_points(
@@ -441,6 +797,7 @@ def extract_pose_features(keypoints, bbox):
             right_elbow,
             right_wrist,
         ),
+        # body_facing va cac vote/reason la bang chung cho logic Di Lui.
         "body_facing": body_facing_evidence["body_facing"],
         "body_facing_confidence": body_facing_evidence[
             "body_facing_confidence"

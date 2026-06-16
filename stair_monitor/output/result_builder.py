@@ -1,25 +1,18 @@
-from stair_monitor.settings import (
-    DEMO_MODE,
-    DRAW_SAFE_STATUS,
-    ENABLE_DEBUG_OVERLAY,
-    HOLD_MIN_NOT_HOLD_EVIDENCE_HITS,
-    UNKNOWN_COLOR,
-    VIOLATION_COLOR,
-    VIOLATION_COUNT_LABELS,
-    VIOLATION_DISPLAY_NAMES,
-)
+from stair_monitor.config.settings import SETTINGS
 
-REAL_VIOLATION_LABELS = list(VIOLATION_COUNT_LABELS)
+REAL_VIOLATION_LABELS = list(SETTINGS.violation.count_labels)
 LANE_SUPPRESSED_HOLD_WARNINGS = frozenset(
     {"Khong Vin", "Vin Sai Ben", "Khong Xac Dinh"}
 )
 DISPLAY_TEXT_REPLACEMENTS = {
-    **VIOLATION_DISPLAY_NAMES,
+    **SETTINGS.violation.display_names,
     "Khong Xac Dinh": "Không xác định",
     "Ngoai Vung": "Ngoài vùng",
     "An Toan": "An toàn",
 }
 # Bang mapping nay giu result dict on dinh va tranh phai truyen tay tung field o analyzer.
+# RESULT_CONTEXT_FIELDS map ten field public trong result dict
+# voi ten bien trong locals()/context cua analyzer.
 RESULT_CONTEXT_FIELDS = (
     ("track_id", "track_id"),
     ("dy", "dy"),
@@ -44,28 +37,19 @@ RESULT_CONTEXT_FIELDS = (
     ("p_lane_source", "p_lane_source"),
     ("lane_missing_feet_grace_left", "lane_missing_feet_grace_left"),
     ("foot_lane_side", "foot_lane_side"),
-    ("head_lane_side", "head_lane_side"),
-    ("head_lane_raw", "head_lane_raw"),
-    ("head_lane_hits", "head_lane_hits"),
-    ("head_lane_sign_normal", "head_lane_sign_normal"),
-    ("head_center_line_valid", "head_center_line_valid"),
     ("inside_stairs", "inside_stairs"),
     ("inside_feet_point", "inside_feet_point"),
+    ("feet_point_source", "feet_point_source"),
+    ("inside_feet_point_source", "inside_feet_point_source"),
     ("ankle_valid_count", "ankle_valid_count"),
     ("feet_reliable", "feet_reliable"),
+    ("bbox_height", "bbox_height"),
     ("left_ankle_valid", "left_ankle_valid"),
     ("right_ankle_valid", "right_ankle_valid"),
     ("left_foot_in", "left_foot_in"),
     ("right_foot_in", "right_foot_in"),
     ("valid_foot_count", "valid_foot_count"),
-    ("head_zone_enabled", "head_zone_enabled"),
-    ("upper_point", "upper_point"),
-    ("upper_point_source", "upper_point_source"),
-    ("upper_point_in_head_zone", "upper_point_in_head_zone"),
-    ("upper_body_in_head_zone", "upper_body_in_head_zone"),
-    ("head_zone_hits", "head_zone_hits"),
     ("track_zone_state", "track_zone_state"),
-    ("ever_confirmed_inside", "ever_confirmed_inside"),
     ("inside_raw_by_feet", "inside_raw_by_feet"),
     ("inside_reason", "inside_reason"),
     ("inside_grace_left", "inside_grace_left"),
@@ -143,6 +127,7 @@ RESULT_CONTEXT_FIELDS = (
     ("standing_len", "standing_len"),
     ("warnings", "warnings"),
 )
+# CARRY_RESULT_FIELDS la cac field duoc carry module bo sung vao result dict cuoi cung.
 CARRY_RESULT_FIELDS = (
     "is_carrying",
     "carry_type",
@@ -179,6 +164,8 @@ CARRY_RESULT_FIELDS = (
     "left_carry_raw_after_claim",
     "right_carry_raw_after_claim",
 )
+# DEBUG_INFO_FIELDS quy dinh tap field se duoc sao chep vao debug_info
+# de overlay/log doc chung 1 cau truc ma khong phai giu nguyen ca locals().
 DEBUG_INFO_FIELDS = (
     "status",
     "display_status",
@@ -205,28 +192,19 @@ DEBUG_INFO_FIELDS = (
     "p_lane_source",
     "lane_missing_feet_grace_left",
     "foot_lane_side",
-    "head_lane_side",
-    "head_lane_raw",
-    "head_lane_hits",
-    "head_lane_sign_normal",
-    "head_center_line_valid",
     "inside_stairs",
     "inside_feet_point",
+    "feet_point_source",
+    "inside_feet_point_source",
     "ankle_valid_count",
     "feet_reliable",
+    "bbox_height",
     "left_ankle_valid",
     "right_ankle_valid",
     "left_foot_in",
     "right_foot_in",
     "valid_foot_count",
-    "head_zone_enabled",
-    "upper_point",
-    "upper_point_source",
-    "upper_point_in_head_zone",
-    "upper_body_in_head_zone",
-    "head_zone_hits",
     "track_zone_state",
-    "ever_confirmed_inside",
     "inside_raw_by_feet",
     "inside_reason",
     "inside_grace_left",
@@ -339,10 +317,12 @@ DEBUG_INFO_FIELDS = (
 class ResultBuilderMixin:
     @staticmethod
     def _lane_suppresses_hold_display(warnings):
+        """Cho biet Sai Lan co dang an bot warning hold tren overlay hay khong."""
         return "Sai Lan" in warnings
 
     @staticmethod
     def _apply_lane_warning_priority(warnings):
+        """Ap quy tac uu tien warning khi Sai Lan da xuat hien."""
         if not ResultBuilderMixin._lane_suppresses_hold_display(warnings):
             return warnings
         return [
@@ -354,6 +334,17 @@ class ResultBuilderMixin:
     @staticmethod
     # Doi nhan noi bo sang chuoi hien thi de overlay doc de hon.
     def _translate_display_text(text):
+        """Doi nhan noi bo sang chuoi hien thi de overlay doc de hon.
+
+        Args:
+            text: Chuoi noi bo can quy doi.
+
+        Returns:
+            str: Chuoi da thay nhan hien thi.
+
+        Notes:
+            Ham nay chi anh huong text overlay, khong doi warning/noi dung logic.
+        """
         translated = text or ""
         for internal_label, display_label in DISPLAY_TEXT_REPLACEMENTS.items():
             translated = translated.replace(internal_label, display_label)
@@ -363,19 +354,31 @@ class ResultBuilderMixin:
     # display_status la chuoi gon de ve demo.
     # status day du van duoc giu lai trong result de debug/log khi can.
     def _build_display_status(direction, warnings):
-        if DEMO_MODE:
+        """Tao chuoi status gon de ve tren bbox/alert demo.
+
+        Args:
+            direction: Direction hien tai cua track.
+            warnings: Danh sach warning noi bo.
+
+        Returns:
+            str: Chuoi ngan gon de overlay.
+
+        Notes:
+            display_status ngan hon status day du de khong lam roi khung nguoi.
+        """
+        if SETTINGS.demo.demo_mode:
             return ResultBuilderMixin._translate_display_text(" - ".join(warnings))
         if warnings:
             return ResultBuilderMixin._translate_display_text(
                 f"{direction} | {' - '.join(warnings)}"
             )
-        if DRAW_SAFE_STATUS:
+        if SETTINGS.demo.draw_safe_status:
             return ResultBuilderMixin._translate_display_text(f"{direction} | An Toan")
         return ""
 
     @staticmethod
     # Gom cac loai loi thuc su tu tung module.
-    # Danh sach nay duoc dung ca cho overlay hien tai va thong ke tong hop.
+    # Danh sach nay duoc dung cho overlay hien tai, alert demo va log.
     def _collect_warnings(
         wrong_lane,
         hold_final_status,
@@ -383,6 +386,21 @@ class ResultBuilderMixin:
         standing_still_confirmed,
         is_carrying=False,
     ):
+        """Gom cac warning final tu tung module hanh vi.
+
+        Args:
+            wrong_lane: Ket qua Sai Lan final.
+            hold_final_status: Ket qua hold final sau history.
+            backward_confirmed: Ket qua Di Lui final.
+            standing_still_confirmed: Ket qua Dung Yen final.
+            is_carrying: Ket qua Mang Vac final.
+
+        Returns:
+            list[str]: Danh sach warning final.
+
+        Notes:
+            Danh sach nay duoc dung cho ca overlay, alert demo va log.
+        """
         warnings = []
         if wrong_lane:
             warnings.append("Sai Lan")
@@ -390,7 +408,7 @@ class ResultBuilderMixin:
             warnings.append("Vin Sai Ben")
         elif hold_final_status == "NONE":
             warnings.append("Khong Vin")
-        elif hold_final_status == "UNKNOWN" and not DEMO_MODE:
+        elif hold_final_status == "UNKNOWN" and not SETTINGS.demo.demo_mode:
             warnings.append("Khong Xac Dinh")
         if is_carrying:
             warnings.append("Mang Vac")
@@ -408,7 +426,23 @@ class ResultBuilderMixin:
         safe_color,
         safe_status,
     ):
-        # Tach "real violation" ra khoi UNKNOWN de panel demo va mau sac khong bi nham.
+        """Tong hop mau sac va status cuoi cung cho 1 track.
+
+        Args:
+            direction: Direction hien tai.
+            warnings: Danh sach warning final.
+            hold_final_status: Hold final sau history.
+            safe_color: Mau dung khi khong co vi pham.
+            safe_status: Chuoi fallback khi khong co warning.
+
+        Returns:
+            tuple: (status, display_status, color)
+
+        Notes:
+            debug overlay co the dung status day du, con bbox overlay thuong dung
+            display_status gon hon de de doc.
+        """
+        # Tach "real violation" ra khoi UNKNOWN de alert demo va mau sac khong bi nham.
         real_warnings = [
             warning for warning in warnings if warning in REAL_VIOLATION_LABELS
         ]
@@ -416,9 +450,9 @@ class ResultBuilderMixin:
         has_unknown = hold_final_status == "UNKNOWN" and not has_real_violation
 
         if has_real_violation:
-            color = VIOLATION_COLOR
+            color = SETTINGS.violation.violation_color
         elif has_unknown:
-            color = UNKNOWN_COLOR
+            color = SETTINGS.violation.unknown_color
         else:
             color = safe_color
 
@@ -426,7 +460,7 @@ class ResultBuilderMixin:
         status_warnings = list(warnings)
         if (
             hold_final_status == "UNKNOWN"
-            and not DEMO_MODE
+            and not SETTINGS.demo.demo_mode
             and not lane_suppresses_hold_display
             and "Khong Xac Dinh" not in status_warnings
         ):
@@ -451,6 +485,24 @@ class ResultBuilderMixin:
         perf=None,
         **overrides,
     ):
+        """Dong goi ket qua analyzer thanh 1 result dict on dinh.
+
+        Args:
+            context: locals()/context cua analyzer tai thoi diem tra ket qua.
+            status: Chuoi status day du.
+            color: Mau overlay final.
+            display_status: Chuoi gon de ve tren bbox.
+            carry_info: Dict carry info neu co.
+            perf: Thong tin perf theo block.
+            **overrides: Field bo sung hoac ghi de them vao result.
+
+        Returns:
+            dict: Result dict cuoi cung.
+
+        Notes:
+            File nay co vai tro gom ket qua tu analyzer thanh 1 dict duy nhat de
+            rendering va log co the doc ma khong can biet noi bo analyzer.
+        """
         # Rut field can thiet tu locals()/context cua analyzer de dong goi ra 1 result dict duy nhat.
         result_kwargs = {
             result_key: context[context_key]
@@ -502,28 +554,19 @@ class ResultBuilderMixin:
         p_lane_source="NONE",
         lane_missing_feet_grace_left=0,
         foot_lane_side=None,
-        head_lane_side=None,
-        head_lane_raw=None,
-        head_lane_hits=0,
-        head_lane_sign_normal=True,
-        head_center_line_valid=False,
         inside_stairs=False,
         inside_feet_point=None,
+        feet_point_source="NO_FEET_POINT",
+        inside_feet_point_source="NO_FEET_POINT",
         ankle_valid_count=0,
         feet_reliable=False,
+        bbox_height=None,
         left_ankle_valid=False,
         right_ankle_valid=False,
         left_foot_in=False,
         right_foot_in=False,
         valid_foot_count=0,
-        head_zone_enabled=False,
-        upper_point=None,
-        upper_point_source="NA",
-        upper_point_in_head_zone=False,
-        upper_body_in_head_zone=False,
-        head_zone_hits=0,
         track_zone_state="UNKNOWN",
-        ever_confirmed_inside=False,
         inside_raw_by_feet=None,
         inside_reason="UNKNOWN",
         inside_grace_left=0,
@@ -632,10 +675,26 @@ class ResultBuilderMixin:
         warnings=None,
         perf=None,
     ):
+        """Tao result dict cuoi cung va debug_info cho overlay/log.
+
+        Args:
+            status: Chuoi status day du.
+            color: Mau overlay final.
+            display_status: Chuoi gon de ve tren bbox.
+            ...: Cac field behavior/debug duoc analyzer truyen vao.
+
+        Returns:
+            dict: Result dict final cho 1 nguoi trong 1 frame.
+
+        Notes:
+            warnings la danh sach canh bao cuoi cung. debug_info chi phuc vu
+            overlay/log, khong duoc de logic nhan dien phu thuoc vao no.
+        """
         # not_hold_by_evidence cho biet "Khong Vin" da co du bang chung qua nhieu frame, khong phai 1 frame le.
         not_hold_by_evidence = (
             hold_status == "NONE"
-            and hold_not_hold_evidence_hits >= HOLD_MIN_NOT_HOLD_EVIDENCE_HITS
+            and hold_not_hold_evidence_hits
+            >= SETTINGS.handrail.hold_min_not_hold_evidence_hits
         )
         result = {
             "status": status,
@@ -664,28 +723,19 @@ class ResultBuilderMixin:
             "p_lane_source": p_lane_source,
             "lane_missing_feet_grace_left": lane_missing_feet_grace_left,
             "foot_lane_side": foot_lane_side,
-            "head_lane_side": head_lane_side,
-            "head_lane_raw": head_lane_raw,
-            "head_lane_hits": head_lane_hits,
-            "head_lane_sign_normal": head_lane_sign_normal,
-            "head_center_line_valid": head_center_line_valid,
             "inside_stairs": inside_stairs,
             "inside_feet_point": inside_feet_point,
+            "feet_point_source": feet_point_source,
+            "inside_feet_point_source": inside_feet_point_source,
             "ankle_valid_count": ankle_valid_count,
             "feet_reliable": feet_reliable,
+            "bbox_height": bbox_height,
             "left_ankle_valid": left_ankle_valid,
             "right_ankle_valid": right_ankle_valid,
             "left_foot_in": left_foot_in,
             "right_foot_in": right_foot_in,
             "valid_foot_count": valid_foot_count,
-            "head_zone_enabled": head_zone_enabled,
-            "upper_point": upper_point,
-            "upper_point_source": upper_point_source,
-            "upper_point_in_head_zone": upper_point_in_head_zone,
-            "upper_body_in_head_zone": upper_body_in_head_zone,
-            "head_zone_hits": head_zone_hits,
             "track_zone_state": track_zone_state,
-            "ever_confirmed_inside": ever_confirmed_inside,
             "inside_raw_by_feet": inside_raw_by_feet,
             "inside_reason": inside_reason,
             "inside_grace_left": inside_grace_left,
@@ -799,7 +849,7 @@ class ResultBuilderMixin:
         # Logic nhan dien khong duoc phu thuoc vao viec co bat debug overlay hay khong.
         result["debug_info"] = (
             {key: result.get(key) for key in DEBUG_INFO_FIELDS}
-            if ENABLE_DEBUG_OVERLAY
+            if SETTINGS.demo.enable_debug_overlay
             else None
         )
         return result
