@@ -431,8 +431,6 @@ def estimate_arm_side_order(keypoints, conf_th=0.5):
     return "UNKNOWN"
 
 
-VIRTUAL_FOOT_BACK_SCALE = 1.3
-SHOULDER_WIDTH_TO_HEIGHT_SCALE = 2.5
 MIN_BBOX_HEIGHT_FOR_BOTTOM_FOOT = 150
 SMALL_BBOX_FALLBACK_HEIGHT = 150
 
@@ -468,7 +466,11 @@ def _estimate_feet_from_shoulder_and_hip(
         return None, "NO_SHOULDER_HIP_VIRTUAL_FEET", False
 
     back_len_y = abs(hip_point[1] - shoulder_point[1])
-    virtual_y = int(hip_point[1] + back_len_y * VIRTUAL_FOOT_BACK_SCALE)
+    if back_len_y <= 0:
+        return None, "NO_SHOULDER_HIP_VIRTUAL_FEET", False
+
+    scale_used = SETTINGS.virtual_feet.shoulder_hip_scale
+    virtual_y = int(hip_point[1] + back_len_y * scale_used)
     return (
         (int(hip_point[0]), virtual_y),
         "VIRTUAL_FROM_SHOULDER_HIP",
@@ -494,7 +496,11 @@ def _estimate_feet_from_two_shoulders(
         right_shoulder[0] - left_shoulder[0],
         right_shoulder[1] - left_shoulder[1],
     )
-    estimated_height = shoulder_width * SHOULDER_WIDTH_TO_HEIGHT_SCALE
+    if shoulder_width <= 0:
+        return None, "NO_TWO_SHOULDER_VIRTUAL_FEET", False
+
+    scale_used = SETTINGS.virtual_feet.two_shoulders_scale
+    estimated_height = shoulder_width * scale_used
     return (
         (
             int(shoulder_center[0]),
@@ -528,43 +534,28 @@ def _estimate_feet_from_bbox(
     )
 
 
-def _select_feet_point(
-    left_ankle: Point | None,
-    right_ankle: Point | None,
-    left_shoulder: Point | None,
-    right_shoulder: Point | None,
-    left_hip: Point | None,
-    right_hip: Point | None,
-    bbox: BBox | None,
-    body_facing: BodyFacingLabel,
+def _select_feet_point_from_candidates(
+    real_feet_point: Point | None,
+    real_feet_source: str,
+    virtual_feet_from_shoulder_hip: Point | None,
+    virtual_feet_from_two_shoulders: Point | None,
+    protected_bbox_feet: Point | None,
+    protected_bbox_source: str,
 ) -> tuple[Point | None, str, bool]:
-    feet_point, feet_point_source, feet_reliable = _select_real_ankle_feet_point(
-        left_ankle,
-        right_ankle,
-    )
-    if feet_point is not None:
-        return feet_point, feet_point_source, feet_reliable
-
-    feet_point, feet_point_source, feet_reliable = (
-        _estimate_feet_from_shoulder_and_hip(
-            left_shoulder,
-            right_shoulder,
-            left_hip,
-            right_hip,
-        )
-    )
-    if feet_point is not None:
-        return feet_point, feet_point_source, feet_reliable
-
-    feet_point, feet_point_source, feet_reliable = _estimate_feet_from_two_shoulders(
-        left_shoulder,
-        right_shoulder,
-        body_facing,
-    )
-    if feet_point is not None:
-        return feet_point, feet_point_source, feet_reliable
-
-    return _estimate_feet_from_bbox(bbox)
+    # Priority bat buoc:
+    # 1. ankle that
+    # 2. shoulder + hip
+    # 3. two shoulders
+    # 4. protected bbox fallback
+    if real_feet_point is not None:
+        return real_feet_point, real_feet_source, True
+    if virtual_feet_from_shoulder_hip is not None:
+        return virtual_feet_from_shoulder_hip, "VIRTUAL_FROM_SHOULDER_HIP", False
+    if virtual_feet_from_two_shoulders is not None:
+        return virtual_feet_from_two_shoulders, "VIRTUAL_FROM_TWO_SHOULDERS", False
+    if protected_bbox_feet is not None:
+        return protected_bbox_feet, protected_bbox_source, False
+    return None, "NO_FEET_POINT", False
 
 
 def _compare_feet_points(
@@ -617,9 +608,12 @@ def _get_torso_box_from_features(features, margin_x=40, margin_y=40, margin_bott
 
 # Gom cac pose feature co the tai su dung o nhieu logic.
 # p_lane uu tien midpoint hai mat ca chan; neu thieu thi fallback bbox bottom center.
-# p_motion uu tien tam hong vi on dinh hon chan khi buoc cau thang; neu thieu moi fallback bbox center.
-# Hai diem nay phuc vu 2 logic khac nhau: p_lane cho sai lan, p_motion cho direction/standing.
-def extract_pose_features(keypoints, bbox) -> PoseFeatures:
+# monitor_point_hip va monitor_point_shoulder duoc tach rieng cho direction de tranh tron source.
+# motion_point chi con la diem compatibility cho cac logic cu van can p_motion.
+def extract_pose_features(
+    keypoints,
+    bbox,
+) -> PoseFeatures:
     """Gom cac pose feature co the tai su dung o nhieu logic.
 
     Args:
@@ -630,9 +624,9 @@ def extract_pose_features(keypoints, bbox) -> PoseFeatures:
         dict: Bo feature chuan hoa duoc dung boi analyzer, carry va rendering.
 
     Notes:
-        p_lane uu tien feet_point vi lane can vi tri chan that. p_motion uu tien
-        hip_center vi on dinh hon khi buoc cau thang. Bbox fallback chi la
-        fallback, khong nen tin hon keypoint that.
+        p_lane uu tien feet_point vi lane can vi tri chan that. Direction moi
+        dung monitor_point_hip va monitor_point_shoulder rieng. motion_point
+        chi giu backward compatibility cho cac caller/logic van can p_motion.
     """
     bbox_tuple: BBox | None = None
     if bbox is not None and len(bbox) >= 4:
@@ -673,12 +667,24 @@ def extract_pose_features(keypoints, bbox) -> PoseFeatures:
 
     hip_center = _midpoint(left_hip, right_hip)
     shoulder_center = _midpoint(left_shoulder, right_shoulder)
+    monitor_point_hip = hip_center
+    monitor_point_hip_source = (
+        "HIP_CENTER" if monitor_point_hip is not None else "NO_HIP_CENTER"
+    )
+    monitor_point_shoulder = shoulder_center
+    monitor_point_shoulder_source = (
+        "SHOULDER_CENTER"
+        if monitor_point_shoulder is not None
+        else "NO_SHOULDER_CENTER"
+    )
     # head_center uu tien tong hop nhieu keypoint dau de giam anh huong keypoint le.
     head_center = _average_points([nose, left_eye, right_eye, left_ear, right_ear])
     body_facing_evidence = compute_body_facing_evidence(keypoints)
     bbox_height = (
         int(bbox_tuple[3] - bbox_tuple[1]) if bbox_tuple is not None else None
     )
+    shoulder_hip_scale_used = SETTINGS.virtual_feet.shoulder_hip_scale
+    two_shoulders_scale_used = SETTINGS.virtual_feet.two_shoulders_scale
 
     ankle_valid_count = int(left_ankle is not None) + int(right_ankle is not None)
     real_feet_point, real_feet_source, _ = _select_real_ankle_feet_point(
@@ -704,18 +710,19 @@ def extract_pose_features(keypoints, bbox) -> PoseFeatures:
         right_shoulder,
         body_facing_evidence["body_facing"],
     )
+    protected_bbox_feet, protected_bbox_source, _ = _estimate_feet_from_bbox(
+        bbox_tuple
+    )
 
     # left_ankle/right_ankle la dau vao uu tien nhat cho lane va inside stairs.
     # feet_point dai dien vi tri nguoi so voi vach giua de xet sai lan.
-    feet_point, feet_point_source, feet_reliable = _select_feet_point(
-        left_ankle,
-        right_ankle,
-        left_shoulder,
-        right_shoulder,
-        left_hip,
-        right_hip,
-        bbox_tuple,
-        body_facing_evidence["body_facing"],
+    feet_point, feet_point_source, feet_reliable = _select_feet_point_from_candidates(
+        real_feet_point,
+        real_feet_source,
+        virtual_feet_from_shoulder_hip,
+        virtual_feet_from_two_shoulders,
+        protected_bbox_feet,
+        protected_bbox_source,
     )
     inside_feet_point = feet_point
     inside_feet_point_source = feet_point_source
@@ -734,10 +741,9 @@ def extract_pose_features(keypoints, bbox) -> PoseFeatures:
         two_shoulders_feet_compare_available,
     ) = _compare_feet_points(real_feet_point, virtual_feet_from_two_shoulders)
 
-    # hip_center/shoulder_center/torso_box giup carry va motion su dung cung 1 bo moc.
-    # motion_point dai dien cho chuyen dong tong the cua nguoi.
-    # Khong uu tien chan vi chan de nhieu khi pose rung hoac buoc buoc tren cau thang.
-    motion_point = hip_center or bbox_center or bbox_bottom_center
+    # hip_center/shoulder_center/torso_box giup carry va cac logic cu dung cung 1 bo moc.
+    # Direction moi se dung monitor point rieng, con motion_point nay chi giu backward compatibility.
+    motion_point = monitor_point_hip or monitor_point_shoulder or bbox_center or bbox_bottom_center
     # bbox_center/bbox_bottom_center chi la fallback khi keypoint bi mat.
     features: PoseFeatures = {
         "bbox": bbox_tuple,
@@ -762,7 +768,11 @@ def extract_pose_features(keypoints, bbox) -> PoseFeatures:
         "hip_center": hip_center,
         "head_center": head_center,
         "shoulder_center": shoulder_center,
-        # motion_point la p_motion de analyzer tinh direction/backward/standing.
+        "monitor_point_hip": monitor_point_hip,
+        "monitor_point_hip_source": monitor_point_hip_source,
+        "monitor_point_shoulder": monitor_point_shoulder,
+        "monitor_point_shoulder_source": monitor_point_shoulder_source,
+        # motion_point la p_motion compatibility cho backward/standing va caller cu.
         "motion_point": motion_point,
         # feet_point la p_lane de analyzer tinh inside/lane.
         "feet_point": feet_point,
@@ -783,6 +793,8 @@ def extract_pose_features(keypoints, bbox) -> PoseFeatures:
         "two_shoulders_feet_dy": two_shoulders_feet_dy,
         "two_shoulders_feet_distance": two_shoulders_feet_distance,
         "two_shoulders_feet_compare_available": two_shoulders_feet_compare_available,
+        "shoulder_hip_scale_used": shoulder_hip_scale_used,
+        "two_shoulders_scale_used": two_shoulders_scale_used,
         "inside_feet_point": inside_feet_point,
         "inside_feet_point_source": inside_feet_point_source,
         "ankle_valid_count": ankle_valid_count,

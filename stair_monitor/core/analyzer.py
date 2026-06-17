@@ -68,7 +68,8 @@ class BehaviorAnalyzer(
         )
 
         self.state = AnalyzerState()
-        self.track_history = self.state.track_history
+        self.hip_motion_history = self.state.hip_motion_history
+        self.shoulder_motion_history = self.state.shoulder_motion_history
         self.lane_history = self.state.lane_history
         self.lane_last_state = self.state.lane_last_state
         self.lane_last_seen = self.state.lane_last_seen
@@ -162,11 +163,25 @@ class BehaviorAnalyzer(
             "handrail_mapping_source": camera_angle_profile,
             "backward_mapping_source": camera_angle_profile,
             "direction": "ANALYZING",
+            "final_direction": "ANALYZING",
+            "hip_direction": "UNKNOWN",
+            "shoulder_direction": "UNKNOWN",
+            "direction_source": "NO_VALID_MONITOR_DIRECTION",
             "direction_reason": "ANALYZING",
             "dy": None,
             "direction_dy": None,
             "v": None,
             "lane_direction": "ANALYZING",
+            "monitor_point_hip": features.get("monitor_point_hip"),
+            "monitor_point_hip_source": features.get(
+                "monitor_point_hip_source",
+                "NO_HIP_CENTER",
+            ),
+            "monitor_point_shoulder": features.get("monitor_point_shoulder"),
+            "monitor_point_shoulder_source": features.get(
+                "monitor_point_shoulder_source",
+                "NO_SHOULDER_CENTER",
+            ),
             "feet_point_source": features.get("feet_point_source", "NO_FEET_POINT"),
             "inside_feet_point": features.get("inside_feet_point"),
             "inside_feet_point_source": features.get(
@@ -335,7 +350,7 @@ class BehaviorAnalyzer(
             )
             return carry_pose
 
-        apply_direction_history(self, track_id, person.p_motion)
+        apply_direction_history(self, track_id, person.features)
 
         standing_start = time.perf_counter() if perf is not None else None
         analysis_context.update(
@@ -356,8 +371,11 @@ class BehaviorAnalyzer(
         )
         self._record_perf(perf, "standing", standing_start)
 
-        if len(self.track_history[track_id]) < SETTINGS.direction.min_frames:
-            analysis_context["direction_reason"] = "DIRECTION_HISTORY_NOT_ENOUGH"
+        direction_start = time.perf_counter() if perf is not None else None
+        analysis_context.update(update_direction(self, track_id, person.features))
+        self._record_perf(perf, "direction", direction_start)
+
+        if analysis_context["direction"] == "ANALYZING":
             if not analysis_context["inside_stairs"]:
                 self._reset_behavior_histories(track_id)
                 analysis_context["hold_raw_status"] = "OUTSIDE"
@@ -402,10 +420,6 @@ class BehaviorAnalyzer(
                     else SETTINGS.violation.analyzing_color
                 ),
             )
-
-        direction_start = time.perf_counter() if perf is not None else None
-        analysis_context.update(update_direction(self, track_id))
-        self._record_perf(perf, "direction", direction_start)
 
         if not analysis_context["inside_stairs"]:
             self._reset_behavior_histories(track_id)
@@ -562,7 +576,8 @@ class BehaviorAnalyzer(
     def cleanup_inactive_tracks(self, active_track_ids):
         active_track_ids = set(active_track_ids)
         history_maps = [
-            self.track_history,
+            self.hip_motion_history,
+            self.shoulder_motion_history,
             self.lane_history,
             self.lane_last_state,
             self.lane_last_seen,

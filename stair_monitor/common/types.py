@@ -11,6 +11,7 @@ ColorBGR: TypeAlias = tuple[int, int, int]
 Numeric: TypeAlias = int | float
 KeypointsArray: TypeAlias = NDArray[np.float32] | NDArray[np.float64]
 BBoxArray: TypeAlias = NDArray[np.float32] | NDArray[np.float64]
+PersonUID: TypeAlias = int
 Direction: TypeAlias = Literal["UP", "DOWN", "IDLE", "ANALYZING", "UNKNOWN"]
 LaneSide: TypeAlias = Literal["LEFT", "RIGHT", "CENTER", "UNKNOWN"]
 BodyFacingLabel: TypeAlias = Literal["FRONT_TO_CAMERA", "BACK_TO_CAMERA", "UNKNOWN"]
@@ -28,6 +29,26 @@ HoldStatusLabel: TypeAlias = Literal[
     "UNKNOWN",
     "ANALYZING",
     "OUTSIDE",
+]
+IdentityStatusLabel: TypeAlias = Literal[
+    "CANDIDATE",
+    "NEW",
+    "ACTIVE",
+    "RELINKED",
+    "LOST",
+    "EXITED",
+]
+PersonSessionStatusLabel: TypeAlias = Literal[
+    "CANDIDATE",
+    "ACTIVE",
+    "LOST",
+    "COMPLETED",
+]
+PersonSessionLifecycleLabel: TypeAlias = Literal[
+    "CANDIDATE_OUTSIDE",
+    "ACTIVE_INSIDE",
+    "LOST_INSIDE",
+    "EXITED",
 ]
 DebugInfoDict: TypeAlias = dict[str, object]
 KeypointValidDict: TypeAlias = dict[str, bool]
@@ -75,6 +96,10 @@ class PoseFeatures(TypedDict, total=False):
     shoulder_center: Point | None
     torso_center: Point | None
     head_center: Point | None
+    monitor_point_hip: Point | None
+    monitor_point_hip_source: str
+    monitor_point_shoulder: Point | None
+    monitor_point_shoulder_source: str
     motion_point: Point | None
     feet_point: Point | None
     feet_point_source: str
@@ -94,6 +119,8 @@ class PoseFeatures(TypedDict, total=False):
     two_shoulders_feet_dy: int | None
     two_shoulders_feet_distance: float | None
     two_shoulders_feet_compare_available: bool
+    shoulder_hip_scale_used: float
+    two_shoulders_scale_used: float
     inside_feet_point: Point | None
     inside_feet_point_source: str
     ankle_valid_count: int
@@ -120,11 +147,35 @@ class AnalysisResult(TypedDict, total=False):
     display_status: str
     color: ColorBGR
     track_id: int
+    person_uid: PersonUID
+    person_uid_label: str
+    yolo_track_id: int | None
+    previous_yolo_track_id: int | None
+    identity_status: IdentityStatusLabel
+    session_status: PersonSessionStatusLabel
+    session_lifecycle: PersonSessionLifecycleLabel
+    identity_debug: str
+    identity_feet_source: str
+    identity_gate_reason: str
+    has_active_person_id: bool
+    relink_score: float | None
+    relink_frame_gap: int
+    entered_count: int
+    exited_count: int
+    active_or_lost_inside_count: int
     dy: Numeric | None
     direction_dy: Numeric | None
     lane_v: Numeric | None
     direction: Direction
+    final_direction: Direction
+    hip_direction: Direction
+    shoulder_direction: Direction
+    direction_source: str
     direction_reason: str
+    monitor_point_hip: Point | None
+    monitor_point_hip_source: str
+    monitor_point_shoulder: Point | None
+    monitor_point_shoulder_source: str
     use_current_camera_angle: bool
     camera_angle_profile: str
     lane_raw: bool | None

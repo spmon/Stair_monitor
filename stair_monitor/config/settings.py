@@ -13,12 +13,12 @@ class VideoConfig:
     # Video dau vao cua ban Windows/demo.
     input_path: str = field(
         default_factory=lambda: str(
-            Path("video") / "raw_video" / "record_2026-06-11_16-23-21.avi"
+            Path("video") / "raw_video"/ "record_2026-06-10_17-41-44.avi"
         )
     )
     # Video output sau khi da ve overlay.
     output_path: str = field(
-        default_factory=lambda: str(Path("video") / "stair_demo" / "demo40.mp4")
+        default_factory=lambda: str(Path("video") / "stair_demo" / "demo45.mp4")
     )
     # JSON chua line/polygon ROI, lane va handrail.
     camera_config_path: str = field(default_factory=lambda: str(Path("camera_config.json")))
@@ -124,9 +124,9 @@ class DirectionConfig:
     # True/False dao quy uoc dy -> UP/DOWN cho profile camera cu.
     sign_normal: bool = False
     # So frame history motion giu lai de tinh dy.
-    history_len: int = 7
+    history_len: int = 8
     # Toi thieu bao nhieu frame moi duoc ket luan huong di.
-    min_frames: int = 5
+    min_frames: int = 7
     # Bien do pixel toi thieu tren truc y de khong con la IDLE.
     pixel_threshold: int = 20
 
@@ -218,6 +218,40 @@ class StandingConfig:
 
 
 @dataclass(frozen=True)
+class VirtualFeetConfig:
+    # Scale trung tinh cho virtual feet shoulder + hip.
+    shoulder_hip_scale: float = 1.0
+    # Scale trung tinh cho virtual feet two shoulders.
+    two_shoulders_scale: float = 2.3
+
+
+@dataclass(frozen=True)
+class PersonIdentityConfig:
+    # Bat lop person_uid on dinh de giam reset history khi YOLO doi track_id.
+    enable_stable_identity: bool = True
+    # So frame trusted feet can nam trong ROI de promote candidate thanh person_id.
+    entry_confirm_frames: int = 2
+    # So frame trusted feet can nam ngoai ROI de xac nhan EXIT.
+    exit_confirm_frames: int = 2
+    # Candidate ngoai ROI duoc giu toi da bao nhieu frame truoc khi bo.
+    candidate_timeout_frames: int = 45
+    # So frame toi da cho phep session o LOST truoc khi xem xet complete.
+    max_lost_frames: int = 30
+    # So frame ghost duoc giu them neu mat giua cau thang va chua exit hop le.
+    lost_inside_extra_frames: int = 45
+    # Nguong khoang cach toi da de relink detection moi vao ghost session cu.
+    relink_max_distance_px: int = 120
+    # Do lech ty le bbox toi da cho relink.
+    relink_max_bbox_size_ratio_diff: float = 0.5
+    # Score tong hop toi da de chap nhan relink; score cang thap cang tot.
+    relink_score_threshold: float = 1.0
+    # Margin top/bottom cua vung cau thang de xem la exit hop le.
+    exit_zone_margin_px: int = 100
+    # Bat log cac event identity quan trong.
+    log_events: bool = True
+
+
+@dataclass(frozen=True)
 class PerformanceConfig:
     # Bat log thong ke thoi gian tung block lon.
     enable_perf_log: bool = True
@@ -237,6 +271,8 @@ class AppSettings:
     carry: CarryConfig = field(default_factory=CarryConfig)
     backward: BackwardConfig = field(default_factory=BackwardConfig)
     standing: StandingConfig = field(default_factory=StandingConfig)
+    virtual_feet: VirtualFeetConfig = field(default_factory=VirtualFeetConfig)
+    identity: PersonIdentityConfig = field(default_factory=PersonIdentityConfig)
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
 
 

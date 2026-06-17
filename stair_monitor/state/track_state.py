@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 
 @dataclass
 class AnalyzerState:
-    track_history: dict[int, list[int]] = field(default_factory=dict)
+    hip_motion_history: dict[int, list[int]] = field(default_factory=dict)
+    shoulder_motion_history: dict[int, list[int]] = field(default_factory=dict)
     lane_history: dict[int, list[bool | None]] = field(default_factory=dict)
     lane_last_state: dict[int, dict[str, object]] = field(default_factory=dict)
     lane_last_seen: dict[int, int] = field(default_factory=dict)

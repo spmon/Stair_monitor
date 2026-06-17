@@ -19,6 +19,7 @@ from stair_monitor.output.rendering import (
     draw_person_overlay,
     draw_scene_guides,
 )
+from stair_monitor.state.person_identity import PersonIdentityManager
 from stair_monitor.vision.geometry import extract_pose_features
 
 
@@ -31,6 +32,7 @@ def process_video():
     # Mo model pose va khoi tao analyzer cho logic stair_monitor.
     model = YOLO("yolo11x-pose.pt")
     analyzer = BehaviorAnalyzer(CONFIG)
+    identity_manager = PersonIdentityManager(CONFIG)
 
     # Mo video input/offline demo.
     cap = cv2.VideoCapture(SETTINGS.video.input_path)
@@ -67,6 +69,7 @@ def process_video():
             break
 
         analyzer.begin_frame()
+        identity_manager.begin_frame(analyzer.frame_index)
         debug_frame_index += 1
 
         # frame_raw la anh goc sach tu video.
@@ -76,7 +79,6 @@ def process_video():
         model_frame = frame_raw.copy()
         overlay_frame = frame_raw.copy()
 
-        active_track_ids = set()
         model_input_snapshot = (
             model_frame.copy() if SETTINGS.video.save_model_input_debug else None
         )
@@ -122,27 +124,54 @@ def process_video():
                 keypoints = results[0].keypoints.data.cpu().numpy()
 
                 for box, tid, kpt in zip(boxes, track_ids, keypoints):
-                    track_id = int(tid)
-                    active_track_ids.add(track_id)
+                    yolo_track_id = int(tid)
 
                     features = extract_pose_features(kpt, box)
+                    identity_result = identity_manager.update_detection(
+                        yolo_track_id=yolo_track_id,
+                        bbox=box,
+                        features=features,
+                        frame_index=analyzer.frame_index,
+                    )
 
-                    # p_lane dung cho sai lan; p_motion dung cho direction/backward/standing.
+                    # p_lane dung cho sai lan; p_motion giu compatibility cho backward/standing.
                     p_lane = features.get("feet_point")
                     p_motion = features.get("motion_point")
 
-                    # Goi analyzer de tong hop toan bo logic cho 1 person/1 frame.
-                    analysis = analyzer.analyze(
-                        track_id,
-                        p_lane,
-                        p_motion,
-                        kpt,
-                        box=box,
-                        features=features,
-                    )
+                    if (
+                        identity_result.has_active_person_id
+                        and identity_result.person_uid is not None
+                    ):
+                        # Chi dua vao analyzer/history chinh sau khi trusted feet
+                        # da ENTER va duoc promote thanh stable person_id.
+                        analysis = analyzer.analyze(
+                            identity_result.person_uid,
+                            p_lane,
+                            p_motion,
+                            kpt,
+                            box=box,
+                            features=features,
+                        )
+                        identity_manager.update_from_analysis(
+                            identity_result.person_uid,
+                            analysis,
+                        )
+                        identity_manager.augment_analysis_result(
+                            analysis,
+                            identity_result,
+                        )
 
-                    if perf_totals is not None:
-                        accumulate_analysis_perf(perf_totals, analysis.get("perf"))
+                        if perf_totals is not None:
+                            accumulate_analysis_perf(
+                                perf_totals,
+                                analysis.get("perf"),
+                            )
+                    else:
+                        # Candidate/ghost/exited van duoc ve overlay,
+                        # nhung khong di vao behavior history chinh.
+                        analysis = identity_manager.build_overlay_result(
+                            identity_result
+                        )
 
                     # Ve ket qua len frame sau khi da co full analysis.
                     draw_person_overlay(
@@ -156,7 +185,10 @@ def process_video():
                         text_drawer=text_drawer,
                     )
 
-            analyzer.cleanup_inactive_tracks(active_track_ids)
+            identity_manager.end_frame()
+            analyzer.cleanup_inactive_tracks(
+                identity_manager.get_retained_person_uids()
+            )
 
             if perf_totals is not None and overlay_start is not None:
                 perf_totals["overlay"] += (

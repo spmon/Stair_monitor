@@ -517,13 +517,15 @@ def _short_feet_source_label(feet_point_source: str) -> str:
     if feet_point_source == "REAL_RIGHT_ANKLE":
         return "REAL_R"
     if feet_point_source == "VIRTUAL_FROM_SHOULDER_HIP":
-        return "SH_HIP"
+        return "SH-HIP"
     if feet_point_source == "VIRTUAL_FROM_TWO_SHOULDERS":
         return "2SH"
     if feet_point_source == "VIRTUAL_FROM_BBOX_BOTTOM":
         return "BBOX"
     if feet_point_source == "VIRTUAL_FROM_SMALL_BBOX_TOP_PLUS_HEIGHT":
         return "SMALL_BOX"
+    if feet_point_source == "NO_TRUSTED_FEET":
+        return "NO_TRUSTED"
     if feet_point_source == "NO_REAL_FEET":
         return "NO_REAL"
     return feet_point_source
@@ -599,10 +601,98 @@ def _format_feet_compare_line(
     return f"{prefix}: dx={dx} dy={dy} d={int(round(distance))}"
 
 
+def _format_virtual_scale_debug_line(
+    prefix: str,
+    scale: float | None,
+) -> str:
+    scale_text = f"{scale:.2f}" if scale is not None else "NA"
+    return f"{prefix} scale={scale_text}"
+
+
+def _short_direction_source_label(direction_source: str) -> str:
+    if direction_source == "HIP_SHOULDER_AGREE":
+        return "AGREE"
+    if direction_source == "HIP_ONLY":
+        return "HIP_ONLY"
+    if direction_source == "SHOULDER_ONLY":
+        return "SH_ONLY"
+    if direction_source == "HIP_SHOULDER_CONFLICT":
+        return "CONFLICT"
+    if direction_source == "NO_VALID_MONITOR_DIRECTION":
+        return "NONE"
+    return direction_source
+
+
+def _format_person_uid_label(analysis) -> str:
+    person_uid_label = analysis.get("person_uid_label")
+    if person_uid_label:
+        return str(person_uid_label)
+
+    person_uid = analysis.get("person_uid")
+    if isinstance(person_uid, int) and person_uid > 0:
+        return f"P{person_uid:04d}"
+
+    track_id = analysis.get("track_id")
+    if (
+        isinstance(track_id, int)
+        and track_id > 0
+        and analysis.get("yolo_track_id") is None
+    ):
+        return f"P{track_id:04d}"
+    return ""
+
+
+def _build_identity_overlay_lines(analysis) -> list[str]:
+    person_uid_label = _format_person_uid_label(analysis)
+    yolo_track_id = analysis.get("yolo_track_id")
+    session_lifecycle = str(
+        analysis.get("session_lifecycle", "CANDIDATE_OUTSIDE")
+    )
+    feet_source = _short_feet_source_label(
+        str(analysis.get("identity_feet_source", "NO_TRUSTED_FEET"))
+    )
+    gate_reason = str(analysis.get("identity_gate_reason", "NA"))
+
+    if person_uid_label and session_lifecycle == "EXITED":
+        title_line = person_uid_label
+    elif person_uid_label and yolo_track_id is not None:
+        title_line = f"{person_uid_label} / YOLO {yolo_track_id}"
+    elif person_uid_label:
+        title_line = f"{person_uid_label} / YOLO lost"
+    elif yolo_track_id is not None:
+        title_line = f"YOLO {yolo_track_id}"
+    else:
+        title_line = "YOLO NA"
+
+    lines = [
+        title_line,
+        f"STATE={session_lifecycle}",
+        f"FEET_SRC={feet_source}",
+        gate_reason,
+    ]
+    if analysis.get("identity_status") == "RELINKED":
+        previous_yolo_track_id = analysis.get("previous_yolo_track_id")
+        relink_score = analysis.get("relink_score")
+        relink_gap = analysis.get("relink_frame_gap", 0)
+        score_text = (
+            f"{float(relink_score):.2f}"
+            if isinstance(relink_score, (int, float))
+            else "NA"
+        )
+        lines.append(
+            "RELINK "
+            f"{previous_yolo_track_id if previous_yolo_track_id is not None else 'NA'}"
+            f"->{yolo_track_id if yolo_track_id is not None else 'NA'}"
+            f" s={score_text} g={int(relink_gap)}"
+        )
+    return lines
+
+
 def draw_feet_comparison_debug(
     frame,
     box,
     features: PoseFeatures,
+    analysis=None,
     text_drawer: VietnameseTextDrawer | None = None,
 ) -> None:
     """Ve so sanh dong thoi real feet, virtual feet va selected feet."""
@@ -668,6 +758,24 @@ def draw_feet_comparison_debug(
         "V-2SH",
         text_drawer=text_drawer,
     )
+    _draw_feet_debug_marker(
+        frame,
+        features.get("monitor_point_hip"),
+        (255, 0, 0),
+        "M-HIP",
+        text_drawer=text_drawer,
+        label_dx=10,
+        label_dy=12,
+    )
+    _draw_feet_debug_marker(
+        frame,
+        features.get("monitor_point_shoulder"),
+        (255, 0, 255),
+        "M-SH",
+        text_drawer=text_drawer,
+        label_dx=10,
+        label_dy=-42,
+    )
 
     if selected_feet_point is not None:
         cv2.circle(frame, selected_feet_point, 12, (0, 0, 0), 1)
@@ -689,12 +797,20 @@ def draw_feet_comparison_debug(
     x1, y1, _x2, _y2 = map(int, box)
     debug_lines = [
         f"RF={_short_feet_source_label(features.get('real_feet_source', 'NO_REAL_FEET'))}",
+        _format_virtual_scale_debug_line(
+            "SH-HIP",
+            features.get("shoulder_hip_scale_used"),
+        ),
         _format_feet_compare_line(
             "SH-HIP",
             features.get("shoulder_hip_feet_dx"),
             features.get("shoulder_hip_feet_dy"),
             features.get("shoulder_hip_feet_distance"),
             features.get("shoulder_hip_feet_compare_available", False),
+        ),
+        _format_virtual_scale_debug_line(
+            "2SH",
+            features.get("two_shoulders_scale_used"),
         ),
         _format_feet_compare_line(
             "2SH",
@@ -703,12 +819,36 @@ def draw_feet_comparison_debug(
             features.get("two_shoulders_feet_distance"),
             features.get("two_shoulders_feet_compare_available", False),
         ),
+        (
+            f"HIP_DIR={analysis.get('hip_direction', 'UNKNOWN')}"
+            if analysis is not None
+            else "HIP_DIR=UNKNOWN"
+        ),
+        (
+            f"SH_DIR={analysis.get('shoulder_direction', 'UNKNOWN')}"
+            if analysis is not None
+            else "SH_DIR=UNKNOWN"
+        ),
+        (
+            "DIR_SRC="
+            + _short_direction_source_label(
+                str(
+                    analysis.get(
+                        "direction_source",
+                        "NO_VALID_MONITOR_DIRECTION",
+                    )
+                )
+            )
+            if analysis is not None
+            else "DIR_SRC=NONE"
+        ),
         f"SEL={_short_feet_source_label(selected_feet_source)}",
     ]
+    debug_box_y = max(0, y1 - (len(debug_lines) * 22 + 8))
     draw_transparent_text_box(
         frame,
         x1 + 8,
-        max(0, y1 - 96),
+        debug_box_y,
         debug_lines,
         alpha=0.55,
         font_size=14,
@@ -818,18 +958,63 @@ def draw_person_overlay(
             text_drawer=text_drawer,
         )
 
-    # Ve 2 diem dai dien de tranh nham:
+    if SETTINGS.demo.draw_debug:
+        identity_lines = _build_identity_overlay_lines(analysis)
+        identity_box_width, _identity_box_height = _measure_vietnamese_lines(
+            identity_lines,
+            font_size=13,
+            padding=10,
+            line_gap=4,
+        )
+        frame_h, frame_w = frame.shape[:2]
+        identity_box_y = max(0, min(y1 + 8, max(0, frame_h - 20)))
+        identity_side_margin = 16
+        left_space = x1
+        right_space = frame_w - x2
+
+        if left_space >= identity_box_width + identity_side_margin:
+            identity_box_x = x1 - identity_side_margin
+            identity_box_anchor = "right"
+        elif right_space >= identity_box_width + identity_side_margin:
+            identity_box_x = x2 + identity_side_margin
+            identity_box_anchor = "left"
+        elif right_space >= left_space:
+            identity_box_x = min(frame_w - 4, x2 + identity_side_margin)
+            identity_box_anchor = "left"
+        else:
+            identity_box_x = max(identity_box_width + 4, x1 - identity_side_margin)
+            identity_box_anchor = "right"
+
+        draw_transparent_text_box(
+            frame,
+            identity_box_x,
+            identity_box_y,
+            identity_lines,
+            alpha=0.55,
+            font_size=13,
+            text_color=(255, 255, 255),
+            box_color=(24, 24, 24),
+            padding=10,
+            line_gap=4,
+            anchor=identity_box_anchor,
+            text_drawer=text_drawer,
+        )
+
+    # Ve 2 diem compatibility de tranh nham:
     # - lane_point cho sai lan
-    # - motion_point cho direction/backward/standing
+    # - motion_point cho backward/standing va caller cu
     if keypoints is not None and SETTINGS.demo.draw_keypoints:
-        cv2.circle(frame, lane_point, 6, (0, 0, 255), -1)
-        cv2.circle(frame, motion_point, 6, (255, 0, 0), -1)
+        if lane_point is not None:
+            cv2.circle(frame, lane_point, 6, (0, 0, 255), -1)
+        if motion_point is not None:
+            cv2.circle(frame, motion_point, 6, (255, 0, 0), -1)
 
     if SETTINGS.demo.draw_debug and features is not None:
         draw_feet_comparison_debug(
             frame,
             box,
             features,
+            analysis=analysis,
             text_drawer=text_drawer,
         )
 
@@ -1053,7 +1238,25 @@ def build_debug_lines(analysis):
         debug block gon hon. Logic suppress warning that nam o result_builder.
     """
     analysis = analysis.get("debug_info") or analysis
+    person_uid_label = _format_person_uid_label(analysis) or "NA"
     debug_lines = [
+        f"PERSON_UID:{person_uid_label}",
+        f"YOLO_TRACK_ID:{analysis.get('yolo_track_id', 'NA')}",
+        f"PREV_YOLO_TRACK_ID:{analysis.get('previous_yolo_track_id', 'NA')}",
+        f"IDENTITY_STATUS:{analysis.get('identity_status', 'ACTIVE')}",
+        f"HAS_ACTIVE_PERSON_ID:{analysis.get('has_active_person_id', False)}",
+        f"SESSION_STATUS:{analysis.get('session_status', 'ACTIVE')}",
+        f"SESSION_LIFECYCLE:{analysis.get('session_lifecycle', 'CANDIDATE_OUTSIDE')}",
+        f"IDENTITY_FEET_SOURCE:{analysis.get('identity_feet_source', 'NO_TRUSTED_FEET')}",
+        f"IDENTITY_GATE_REASON:{analysis.get('identity_gate_reason', 'NA')}",
+        f"IDENTITY_DEBUG:{analysis.get('identity_debug', 'NA')}",
+        f"RELINK_SCORE:{analysis['relink_score']:.2f}"
+        if isinstance(analysis.get("relink_score"), (int, float))
+        else "RELINK_SCORE:NA",
+        f"RELINK_FRAME_GAP:{analysis.get('relink_frame_gap', 0)}",
+        f"ENTERED_COUNT:{analysis.get('entered_count', 0)}",
+        f"EXITED_COUNT:{analysis.get('exited_count', 0)}",
+        f"ACTIVE_OR_LOST_INSIDE_COUNT:{analysis.get('active_or_lost_inside_count', 0)}",
         f"BEST_WRIST:{analysis.get('best_wrist', 'NONE')}",
         f"BEST_WRIST_CORRECT:{analysis.get('best_wrist_correct', 'NONE')}",
         f"BEST_WRIST_WRONG:{analysis.get('best_wrist_wrong', 'NONE')}",
@@ -1097,6 +1300,18 @@ def build_debug_lines(analysis):
         f"LANE_V:{int(analysis['lane_v'])}"
         if analysis.get("lane_v") is not None
         else "LANE_V:NA",
+        f"HIP_MONITOR_POINT:{analysis['monitor_point_hip'][0]},{analysis['monitor_point_hip'][1]}"
+        if analysis.get("monitor_point_hip") is not None
+        else "HIP_MONITOR_POINT:NA",
+        f"SHOULDER_MONITOR_POINT:{analysis['monitor_point_shoulder'][0]},{analysis['monitor_point_shoulder'][1]}"
+        if analysis.get("monitor_point_shoulder") is not None
+        else "SHOULDER_MONITOR_POINT:NA",
+        f"HIP_MONITOR_SOURCE:{analysis.get('monitor_point_hip_source', 'NO_HIP_CENTER')}",
+        f"SHOULDER_MONITOR_SOURCE:{analysis.get('monitor_point_shoulder_source', 'NO_SHOULDER_CENTER')}",
+        f"HIP_DIRECTION:{analysis.get('hip_direction', 'UNKNOWN')}",
+        f"SHOULDER_DIRECTION:{analysis.get('shoulder_direction', 'UNKNOWN')}",
+        f"FINAL_DIRECTION:{analysis.get('final_direction', analysis.get('direction', 'ANALYZING'))}",
+        f"DIRECTION_SOURCE:{analysis.get('direction_source', 'NO_VALID_MONITOR_DIRECTION')}",
         f"DIR:{analysis.get('direction', 'NA')}",
         f"DIRECTION_REASON:{analysis.get('direction_reason', 'UNKNOWN')}",
         f"INSIDE_STAIRS:{analysis.get('inside_stairs', False)}",
