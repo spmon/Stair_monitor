@@ -81,7 +81,7 @@ def get_camera_angle_profile() -> str:
 
 def select_p_lane_for_lane(features: PoseFeatures):
     feet_point = features.get("feet_point")
-    feet_point_source = features.get("feet_point_source", "NO_FEET_POINT")
+    feet_point_source = features.get("feet_point_source", "FEET_UNAVAILABLE")
 
     if feet_point is None:
         return None, "NO_FOOT", "NO_VALID_FOOT_FOR_LANE"

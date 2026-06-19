@@ -1,5 +1,6 @@
 import numpy as np
 
+from stair_monitor.common.types import AnalysisSubjectID
 from stair_monitor.config.settings import SETTINGS
 
 
@@ -12,7 +13,7 @@ class BehaviorHistoryMixin:
 
     # Reset history theo tung track_id khi nguoi ra khoi vung hoac mat track.
     # Moi track co bo history rieng de tranh lay ket qua frame cu cua nguoi nay gan sang nguoi khac.
-    def _reset_behavior_histories(self, track_id):
+    def _reset_behavior_histories(self, track_id: AnalysisSubjectID):
         """Reset cac history hanh vi cho mot track_id.
 
         Args:
@@ -29,12 +30,22 @@ class BehaviorHistoryMixin:
             self.lane_history[track_id] = []
         if track_id in self.hold_status_history:
             self.hold_status_history[track_id] = []
+        if hasattr(self, "left_handrail_hit_history") and track_id in self.left_handrail_hit_history:
+            self.left_handrail_hit_history[track_id] = []
+        if hasattr(self, "right_handrail_hit_history") and track_id in self.right_handrail_hit_history:
+            self.right_handrail_hit_history[track_id] = []
         if track_id in self.front_carry_history:
             self.front_carry_history[track_id] = []
         if track_id in self.front_carry_one_arm_history:
             self.front_carry_one_arm_history[track_id] = []
         if track_id in self.backward_history:
             self.backward_history[track_id] = []
+        if hasattr(self, "two_step_skip_history") and track_id in self.two_step_skip_history:
+            self.two_step_skip_history[track_id] = []
+        if hasattr(self, "left_foot_step_states") and track_id in self.left_foot_step_states:
+            del self.left_foot_step_states[track_id]
+        if hasattr(self, "right_foot_step_states") and track_id in self.right_foot_step_states:
+            del self.right_foot_step_states[track_id]
         self.standing_history[track_id] = []
         self.standing_motion_history[track_id] = []
         if hasattr(self, "hand_claim_state") and track_id in self.hand_claim_state:
@@ -44,29 +55,8 @@ class BehaviorHistoryMixin:
 
     # hold_raw_status la ket qua cua tung frame.
     # hold_final_status la ket qua sau khi da qua bo loc history de chong nhieu keypoint/YOLO.
-    def _update_hold_status_history(self, track_id, hold_final_status_raw):
-        """Cap nhat history vin tay va tra ra trang thai da duoc bo loc.
-
-        Args:
-            track_id: ID cua nguoi dang duoc cap nhat history.
-            hold_final_status_raw: Ket qua hold raw cua frame hien tai.
-
-        Returns:
-            tuple: So hit tung loai hold va trang thai final sau history.
-
-        Notes:
-            Raw status la bang chung frame-level. Final status chi duoc xac nhan
-            sau khi history du hit de chong nhieu keypoint va tracker.
-        """
-        if track_id not in self.hold_status_history:
-            self.hold_status_history[track_id] = []
-
-        self.hold_status_history[track_id].append(hold_final_status_raw)
-        self.hold_status_history[track_id] = self.hold_status_history[track_id][
-            -SETTINGS.handrail.hold_history_len:
-        ]
-
-        history = self.hold_status_history[track_id]
+    def _get_hold_status_history_state(self, track_id: AnalysisSubjectID):
+        history = self.hold_status_history.get(track_id, [])
         hold_correct_hits = sum(1 for status in history if status == "CORRECT")
         hold_wrong_side_hits = sum(1 for status in history if status == "WRONG_SIDE")
         hold_none_hits = sum(1 for status in history if status == "NONE")
@@ -116,8 +106,95 @@ class BehaviorHistoryMixin:
             holding,
         )
 
+    def _update_hold_status_history(self, track_id: AnalysisSubjectID, hold_final_status_raw):
+        """Cap nhat history vin tay va tra ra trang thai da duoc bo loc.
+
+        Args:
+            track_id: ID cua nguoi dang duoc cap nhat history.
+            hold_final_status_raw: Ket qua hold raw cua frame hien tai.
+
+        Returns:
+            tuple: So hit tung loai hold va trang thai final sau history.
+
+        Notes:
+            Raw status la bang chung frame-level. Final status chi duoc xac nhan
+            sau khi history du hit de chong nhieu keypoint va tracker.
+        """
+        if track_id not in self.hold_status_history:
+            self.hold_status_history[track_id] = []
+
+        self.hold_status_history[track_id].append(hold_final_status_raw)
+        self.hold_status_history[track_id] = self.hold_status_history[track_id][
+            -SETTINGS.handrail.hold_history_len:
+        ]
+        return self._get_hold_status_history_state(track_id)
+
+    @staticmethod
+    def _get_right_handrail_confirm_required() -> int:
+        return max(1, max(4, SETTINGS.handrail.hold_history_len // 4))
+
+    @staticmethod
+    def _get_left_handrail_confirm_required() -> int:
+        return max(1, int(SETTINGS.handrail.hold_min_wrong_side_hits))
+
+    @staticmethod
+    def _count_trailing_matches(history: list[bool], expected_value: bool) -> int:
+        trailing_count = 0
+        for value in reversed(history):
+            if value != expected_value:
+                break
+            trailing_count += 1
+        return trailing_count
+
+    def _get_handrail_hit_history_state(self, track_id: AnalysisSubjectID) -> dict[str, int | bool]:
+        left_history = self.left_handrail_hit_history.get(track_id, [])
+        right_history = self.right_handrail_hit_history.get(track_id, [])
+        left_hit_count = sum(1 for is_hit in left_history if is_hit)
+        right_hit_count = sum(1 for is_hit in right_history if is_hit)
+        left_confirm_required = self._get_left_handrail_confirm_required()
+        right_confirm_required = self._get_right_handrail_confirm_required()
+
+        return {
+            "left_wrist_hit_count": left_hit_count,
+            "right_wrist_hit_count": right_hit_count,
+            "left_wrist_miss_count": self._count_trailing_matches(left_history, False),
+            "right_wrist_miss_count": self._count_trailing_matches(right_history, False),
+            "left_wrist_confirm_required": left_confirm_required,
+            "right_wrist_confirm_required": right_confirm_required,
+            "left_wrist_confirm_ready": (
+                len(left_history) >= SETTINGS.handrail.hold_history_len
+                and left_hit_count >= left_confirm_required
+            ),
+            "right_wrist_confirm_ready": right_hit_count >= right_confirm_required,
+        }
+
+    def _update_handrail_hit_history(
+        self,
+        track_id: AnalysisSubjectID,
+        left_hit: bool,
+        right_hit: bool,
+    ) -> dict[str, int | bool]:
+        history_window = max(1, int(SETTINGS.handrail.hold_history_len))
+
+        if track_id not in self.left_handrail_hit_history:
+            self.left_handrail_hit_history[track_id] = []
+        if track_id not in self.right_handrail_hit_history:
+            self.right_handrail_hit_history[track_id] = []
+
+        self.left_handrail_hit_history[track_id].append(bool(left_hit))
+        self.left_handrail_hit_history[track_id] = self.left_handrail_hit_history[
+            track_id
+        ][-history_window:]
+
+        self.right_handrail_hit_history[track_id].append(bool(right_hit))
+        self.right_handrail_hit_history[track_id] = self.right_handrail_hit_history[
+            track_id
+        ][-history_window:]
+
+        return self._get_handrail_hit_history_state(track_id)
+
     # Doc lai trang thai sai lan da tich luy truoc do khi frame hien tai chua du dieu kien cap nhat.
-    def _get_lane_history_state(self, track_id):
+    def _get_lane_history_state(self, track_id: AnalysisSubjectID):
         """Lay tong hop lane history hien co cua mot track_id.
 
         Args:
@@ -139,7 +216,7 @@ class BehaviorHistoryMixin:
         return lane_wrong_hits, wrong_lane_confirmed
 
     # Lane history giup tranh bao sai chi vi 1 vai frame pose rung.
-    def _update_lane_history(self, track_id, wrong_lane_raw):
+    def _update_lane_history(self, track_id: AnalysisSubjectID, wrong_lane_raw):
         """Them 1 mau lane raw vao history cua track hien tai.
 
         Args:
@@ -163,7 +240,7 @@ class BehaviorHistoryMixin:
         return self._get_lane_history_state(track_id)
 
     # Di lui chi duoc xac nhan khi direction va body facing on dinh trong nhieu frame lien tiep.
-    def _update_backward_history(self, track_id, backward_raw):
+    def _update_backward_history(self, track_id: AnalysisSubjectID, backward_raw):
         """Cap nhat history Di Lui theo track_id.
 
         Args:
@@ -193,7 +270,7 @@ class BehaviorHistoryMixin:
         )
         return backward_hits, backward_confirmed
 
-    def update_standing_still(self, track_id, p_motion):
+    def update_standing_still(self, track_id: AnalysisSubjectID, p_motion):
         """
         Cap nhat history Dung Yen doc lap voi direction.
 
@@ -263,7 +340,7 @@ class BehaviorHistoryMixin:
             len(points),
         )
 
-    def _update_standing_history(self, track_id, p_motion):
+    def _update_standing_history(self, track_id: AnalysisSubjectID, p_motion):
         """Alias giu ten cu cho logic standing history.
 
         Args:

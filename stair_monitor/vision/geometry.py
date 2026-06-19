@@ -1,8 +1,10 @@
 import math
 
+from dataclasses import dataclass
+
 import numpy as np
 
-from stair_monitor.common.types import BBox, BodyFacingLabel, Point, PoseFeatures
+from stair_monitor.common.types import BBox, Point, PoseFeatures
 from stair_monitor.config.settings import SETTINGS
 
 
@@ -48,6 +50,12 @@ def _get_keypoint_point(keypoints, idx, conf_th=0.5):
     if not _keypoint_is_visible(keypoints, idx, conf_th):
         return None
     return (int(keypoints[idx][0]), int(keypoints[idx][1]))
+
+
+def _get_keypoint_confidence(keypoints, idx):
+    if keypoints is None or len(keypoints) <= idx or len(keypoints[idx]) <= 2:
+        return 0.0
+    return float(keypoints[idx][2])
 
 
 # Midpoint duoc dung de tao cac diem dai dien on dinh hon so voi dung 1 keypoint le.
@@ -430,15 +438,70 @@ def estimate_arm_side_order(keypoints, conf_th=0.5):
         return "LEFT_ARM_ON_IMAGE_LEFT"
     return "UNKNOWN"
 
+@dataclass(frozen=True)
+class ShoulderHipVirtualFeetEstimate:
+    point: Point | None
+    source: str
+    selected_pair: str
+    visible_shoulder_count: int
+    visible_hip_count: int
+    shoulder_anchor: Point | None
+    hip_anchor: Point | None
+    unavailable_reason: str
 
-MIN_BBOX_HEIGHT_FOR_BOTTOM_FOOT = 150
-SMALL_BBOX_FALLBACK_HEIGHT = 150
+def _build_shoulder_hip_unavailable_estimate(
+    visible_shoulder_count: int,
+    visible_hip_count: int,
+    unavailable_reason: str,
+) -> ShoulderHipVirtualFeetEstimate:
+    return ShoulderHipVirtualFeetEstimate(
+        point=None,
+        source=f"FEET_UNAVAILABLE_{unavailable_reason}",
+        selected_pair="NONE",
+        visible_shoulder_count=visible_shoulder_count,
+        visible_hip_count=visible_hip_count,
+        shoulder_anchor=None,
+        hip_anchor=None,
+        unavailable_reason=unavailable_reason,
+    )
 
 
-def _center_or_single(point_a: Point | None, point_b: Point | None) -> Point | None:
-    if point_a is not None and point_b is not None:
-        return _midpoint(point_a, point_b)
-    return point_a or point_b
+def _project_virtual_foot_from_shoulder_and_hip(
+    shoulder_point: Point | None,
+    hip_point: Point | None,
+    foot_x: int,
+    source: str,
+    selected_pair: str,
+    visible_shoulder_count: int,
+    visible_hip_count: int,
+) -> ShoulderHipVirtualFeetEstimate:
+    if shoulder_point is None or hip_point is None:
+        return _build_shoulder_hip_unavailable_estimate(
+            visible_shoulder_count,
+            visible_hip_count,
+            "NO_VALID_SH_HIP_PAIR",
+        )
+
+    back_len_y = abs(hip_point[1] - shoulder_point[1])
+    if back_len_y <= 0:
+        return _build_shoulder_hip_unavailable_estimate(
+            visible_shoulder_count,
+            visible_hip_count,
+            "NO_VALID_SH_HIP_PAIR",
+        )
+
+    scale_used = SETTINGS.virtual_feet.shoulder_hip_scale
+    virtual_y = int(hip_point[1] + back_len_y * scale_used)
+    return ShoulderHipVirtualFeetEstimate(
+        point=(int(foot_x), virtual_y),
+        source=source,
+        selected_pair=selected_pair,
+        visible_shoulder_count=visible_shoulder_count,
+        visible_hip_count=visible_hip_count,
+        shoulder_anchor=shoulder_point,
+        hip_anchor=hip_point,
+        unavailable_reason="NONE",
+    )
 
 
 def _select_real_ankle_feet_point(
@@ -459,78 +522,141 @@ def _estimate_feet_from_shoulder_and_hip(
     right_shoulder: Point | None,
     left_hip: Point | None,
     right_hip: Point | None,
-) -> tuple[Point | None, str, bool]:
-    shoulder_point = _center_or_single(left_shoulder, right_shoulder)
-    hip_point = _center_or_single(left_hip, right_hip)
-    if shoulder_point is None or hip_point is None:
-        return None, "NO_SHOULDER_HIP_VIRTUAL_FEET", False
+) -> ShoulderHipVirtualFeetEstimate:
+    visible_shoulders = [
+        ("L", left_shoulder),
+        ("R", right_shoulder),
+    ]
+    visible_shoulders = [
+        (label, point)
+        for label, point in visible_shoulders
+        if point is not None
+    ]
+    visible_hips = [
+        ("L", left_hip),
+        ("R", right_hip),
+    ]
+    visible_hips = [
+        (label, point)
+        for label, point in visible_hips
+        if point is not None
+    ]
+    visible_shoulder_count = len(visible_shoulders)
+    visible_hip_count = len(visible_hips)
 
-    back_len_y = abs(hip_point[1] - shoulder_point[1])
-    if back_len_y <= 0:
-        return None, "NO_SHOULDER_HIP_VIRTUAL_FEET", False
-
-    scale_used = SETTINGS.virtual_feet.shoulder_hip_scale
-    virtual_y = int(hip_point[1] + back_len_y * scale_used)
-    return (
-        (int(hip_point[0]), virtual_y),
-        "VIRTUAL_FROM_SHOULDER_HIP",
-        False,
-    )
-
-
-def _estimate_feet_from_two_shoulders(
-    left_shoulder: Point | None,
-    right_shoulder: Point | None,
-    body_facing: BodyFacingLabel,
-) -> tuple[Point | None, str, bool]:
-    if left_shoulder is None or right_shoulder is None:
-        return None, "NO_TWO_SHOULDER_VIRTUAL_FEET", False
-    if body_facing not in ("FRONT_TO_CAMERA", "BACK_TO_CAMERA"):
-        return None, "SKIPPED_BODY_NOT_FRONT_BACK", False
-
-    shoulder_center = _midpoint(left_shoulder, right_shoulder)
-    if shoulder_center is None:
-        return None, "NO_TWO_SHOULDER_VIRTUAL_FEET", False
-
-    shoulder_width = math.hypot(
-        right_shoulder[0] - left_shoulder[0],
-        right_shoulder[1] - left_shoulder[1],
-    )
-    if shoulder_width <= 0:
-        return None, "NO_TWO_SHOULDER_VIRTUAL_FEET", False
-
-    scale_used = SETTINGS.virtual_feet.two_shoulders_scale
-    estimated_height = shoulder_width * scale_used
-    return (
-        (
-            int(shoulder_center[0]),
-            int(shoulder_center[1] + estimated_height),
-        ),
-        "VIRTUAL_FROM_TWO_SHOULDERS",
-        False,
-    )
-
-
-def _estimate_feet_from_bbox(
-    bbox: BBox | None,
-) -> tuple[Point | None, str, bool]:
-    if bbox is None:
-        return None, "NO_FEET_POINT", False
-
-    x1, y1, x2, y2 = bbox
-    bbox_height = int(y2 - y1)
-    bbox_center_x = int((x1 + x2) / 2)
-    if bbox_height < MIN_BBOX_HEIGHT_FOR_BOTTOM_FOOT:
-        return (
-            (bbox_center_x, int(y1 + SMALL_BBOX_FALLBACK_HEIGHT)),
-            "VIRTUAL_FROM_SMALL_BBOX_TOP_PLUS_HEIGHT",
-            False,
+    if visible_shoulder_count == 0 and visible_hip_count == 0:
+        return _build_shoulder_hip_unavailable_estimate(
+            visible_shoulder_count,
+            visible_hip_count,
+            "NO_SHOULDER_NO_HIP",
+        )
+    if visible_shoulder_count == 0:
+        return _build_shoulder_hip_unavailable_estimate(
+            visible_shoulder_count,
+            visible_hip_count,
+            "NO_SHOULDER",
+        )
+    if visible_hip_count == 0:
+        return _build_shoulder_hip_unavailable_estimate(
+            visible_shoulder_count,
+            visible_hip_count,
+            "NO_HIP",
         )
 
-    return (
-        (bbox_center_x, int(y2)),
-        "VIRTUAL_FROM_BBOX_BOTTOM",
-        False,
+    if visible_shoulder_count == 2 and visible_hip_count == 2:
+        left_estimate = _project_virtual_foot_from_shoulder_and_hip(
+            left_shoulder,
+            left_hip,
+            left_hip[0],
+            "VIRTUAL_FROM_SH_LEFT_HIP_LEFT",
+            "SH_L+HIP_L",
+            visible_shoulder_count,
+            visible_hip_count,
+        )
+        right_estimate = _project_virtual_foot_from_shoulder_and_hip(
+            right_shoulder,
+            right_hip,
+            right_hip[0],
+            "VIRTUAL_FROM_SH_RIGHT_HIP_RIGHT",
+            "SH_R+HIP_R",
+            visible_shoulder_count,
+            visible_hip_count,
+        )
+        if left_estimate.point is not None and right_estimate.point is not None:
+            return ShoulderHipVirtualFeetEstimate(
+                point=_midpoint(left_estimate.point, right_estimate.point),
+                source="VIRTUAL_FROM_SH_HIP_BOTH_SIDES",
+                selected_pair="SH_L+HIP_L|SH_R+HIP_R",
+                visible_shoulder_count=visible_shoulder_count,
+                visible_hip_count=visible_hip_count,
+                shoulder_anchor=_average_points([left_shoulder, right_shoulder]),
+                hip_anchor=_average_points([left_hip, right_hip]),
+                unavailable_reason="NONE",
+            )
+        if left_estimate.point is not None:
+            return left_estimate
+        if right_estimate.point is not None:
+            return right_estimate
+        return _build_shoulder_hip_unavailable_estimate(
+            visible_shoulder_count,
+            visible_hip_count,
+            "NO_VALID_SH_HIP_PAIR",
+        )
+
+    if visible_shoulder_count == 2 and visible_hip_count == 1:
+        hip_label, hip_point = visible_hips[0]
+        shoulder_point = _average_points([left_shoulder, right_shoulder])
+        return _project_virtual_foot_from_shoulder_and_hip(
+            shoulder_point,
+            hip_point,
+            hip_point[0],
+            "VIRTUAL_FROM_AVG_SHOULDERS_1HIP",
+            f"AVG_SH+HIP_{hip_label}",
+            visible_shoulder_count,
+            visible_hip_count,
+        )
+
+    if visible_shoulder_count == 1 and visible_hip_count == 2:
+        shoulder_label, shoulder_point = visible_shoulders[0]
+        hip_point = _average_points([left_hip, right_hip])
+        return _project_virtual_foot_from_shoulder_and_hip(
+            shoulder_point,
+            hip_point,
+            hip_point[0],
+            "VIRTUAL_FROM_1SH_2HIP_AVG_HIP",
+            f"SH_{shoulder_label}+AVG_2HIP",
+            visible_shoulder_count,
+            visible_hip_count,
+        )
+
+    shoulder_label, shoulder_point = visible_shoulders[0]
+    hip_label, hip_point = visible_hips[0]
+    if shoulder_label == hip_label:
+        return _project_virtual_foot_from_shoulder_and_hip(
+            shoulder_point,
+            hip_point,
+            hip_point[0],
+            (
+                "VIRTUAL_FROM_SH_LEFT_HIP_LEFT"
+                if shoulder_label == "L"
+                else "VIRTUAL_FROM_SH_RIGHT_HIP_RIGHT"
+            ),
+            f"SH_{shoulder_label}+HIP_{hip_label}",
+            visible_shoulder_count,
+            visible_hip_count,
+        )
+    return _project_virtual_foot_from_shoulder_and_hip(
+        shoulder_point,
+        hip_point,
+        int((shoulder_point[0] + hip_point[0]) / 2),
+        (
+            "VIRTUAL_FROM_SH_LEFT_HIP_RIGHT"
+            if shoulder_label == "L"
+            else "VIRTUAL_FROM_SH_RIGHT_HIP_LEFT"
+        ),
+        f"SH_{shoulder_label}+HIP_{hip_label}",
+        visible_shoulder_count,
+        visible_hip_count,
     )
 
 
@@ -538,24 +664,15 @@ def _select_feet_point_from_candidates(
     real_feet_point: Point | None,
     real_feet_source: str,
     virtual_feet_from_shoulder_hip: Point | None,
-    virtual_feet_from_two_shoulders: Point | None,
-    protected_bbox_feet: Point | None,
-    protected_bbox_source: str,
 ) -> tuple[Point | None, str, bool]:
     # Priority bat buoc:
     # 1. ankle that
     # 2. shoulder + hip
-    # 3. two shoulders
-    # 4. protected bbox fallback
     if real_feet_point is not None:
         return real_feet_point, real_feet_source, True
     if virtual_feet_from_shoulder_hip is not None:
-        return virtual_feet_from_shoulder_hip, "VIRTUAL_FROM_SHOULDER_HIP", False
-    if virtual_feet_from_two_shoulders is not None:
-        return virtual_feet_from_two_shoulders, "VIRTUAL_FROM_TWO_SHOULDERS", False
-    if protected_bbox_feet is not None:
-        return protected_bbox_feet, protected_bbox_source, False
-    return None, "NO_FEET_POINT", False
+        return virtual_feet_from_shoulder_hip, "VIRTUAL_FROM_SHOULDER_HIP", True
+    return None, "FEET_UNAVAILABLE", False
 
 
 def _compare_feet_points(
@@ -607,7 +724,7 @@ def _get_torso_box_from_features(features, margin_x=40, margin_y=40, margin_bott
 
 
 # Gom cac pose feature co the tai su dung o nhieu logic.
-# p_lane uu tien midpoint hai mat ca chan; neu thieu thi fallback bbox bottom center.
+# p_lane/inside chi dung chan that hoac SH-HIP; khong dung 2 shoulder hay bbox fallback.
 # monitor_point_hip va monitor_point_shoulder duoc tach rieng cho direction de tranh tron source.
 # motion_point chi con la diem compatibility cho cac logic cu van can p_motion.
 def extract_pose_features(
@@ -652,6 +769,8 @@ def extract_pose_features(
     right_hip = _get_keypoint_point(keypoints, 12)
     left_ankle = _get_keypoint_point(keypoints, 15)
     right_ankle = _get_keypoint_point(keypoints, 16)
+    left_ankle_conf = _get_keypoint_confidence(keypoints, 15)
+    right_ankle_conf = _get_keypoint_confidence(keypoints, 16)
 
     bbox_center = None
     bbox_bottom_center = None
@@ -684,35 +803,20 @@ def extract_pose_features(
         int(bbox_tuple[3] - bbox_tuple[1]) if bbox_tuple is not None else None
     )
     shoulder_hip_scale_used = SETTINGS.virtual_feet.shoulder_hip_scale
-    two_shoulders_scale_used = SETTINGS.virtual_feet.two_shoulders_scale
 
     ankle_valid_count = int(left_ankle is not None) + int(right_ankle is not None)
     real_feet_point, real_feet_source, _ = _select_real_ankle_feet_point(
         left_ankle,
         right_ankle,
     )
-    (
-        virtual_feet_from_shoulder_hip,
-        virtual_feet_from_shoulder_hip_source,
-        _,
-    ) = _estimate_feet_from_shoulder_and_hip(
+    sh_hip_estimate = _estimate_feet_from_shoulder_and_hip(
         left_shoulder,
         right_shoulder,
         left_hip,
         right_hip,
     )
-    (
-        virtual_feet_from_two_shoulders,
-        virtual_feet_from_two_shoulders_source,
-        _,
-    ) = _estimate_feet_from_two_shoulders(
-        left_shoulder,
-        right_shoulder,
-        body_facing_evidence["body_facing"],
-    )
-    protected_bbox_feet, protected_bbox_source, _ = _estimate_feet_from_bbox(
-        bbox_tuple
-    )
+    virtual_feet_from_shoulder_hip = sh_hip_estimate.point
+    virtual_feet_from_shoulder_hip_source = sh_hip_estimate.source
 
     # left_ankle/right_ankle la dau vao uu tien nhat cho lane va inside stairs.
     # feet_point dai dien vi tri nguoi so voi vach giua de xet sai lan.
@@ -720,9 +824,10 @@ def extract_pose_features(
         real_feet_point,
         real_feet_source,
         virtual_feet_from_shoulder_hip,
-        virtual_feet_from_two_shoulders,
-        protected_bbox_feet,
-        protected_bbox_source,
+    )
+    feet_available = feet_point is not None
+    feet_unavailable_reason = (
+        "NONE" if feet_available else sh_hip_estimate.unavailable_reason
     )
     inside_feet_point = feet_point
     inside_feet_point_source = feet_point_source
@@ -734,13 +839,6 @@ def extract_pose_features(
         shoulder_hip_feet_distance,
         shoulder_hip_feet_compare_available,
     ) = _compare_feet_points(real_feet_point, virtual_feet_from_shoulder_hip)
-    (
-        two_shoulders_feet_dx,
-        two_shoulders_feet_dy,
-        two_shoulders_feet_distance,
-        two_shoulders_feet_compare_available,
-    ) = _compare_feet_points(real_feet_point, virtual_feet_from_two_shoulders)
-
     # hip_center/shoulder_center/torso_box giup carry va cac logic cu dung cung 1 bo moc.
     # Direction moi se dung monitor point rieng, con motion_point nay chi giu backward compatibility.
     motion_point = monitor_point_hip or monitor_point_shoulder or bbox_center or bbox_bottom_center
@@ -765,6 +863,8 @@ def extract_pose_features(
         "right_hip": right_hip,
         "left_ankle": left_ankle,
         "right_ankle": right_ankle,
+        "left_ankle_conf": left_ankle_conf,
+        "right_ankle_conf": right_ankle_conf,
         "hip_center": hip_center,
         "head_center": head_center,
         "shoulder_center": shoulder_center,
@@ -777,24 +877,26 @@ def extract_pose_features(
         # feet_point la p_lane de analyzer tinh inside/lane.
         "feet_point": feet_point,
         "feet_point_source": feet_point_source,
+        "feet_available": feet_available,
+        "feet_unavailable_reason": feet_unavailable_reason,
         "real_feet_point": real_feet_point,
         "real_feet_source": real_feet_source,
+        "sh_hip_visible_shoulder_count": sh_hip_estimate.visible_shoulder_count,
+        "sh_hip_visible_hip_count": sh_hip_estimate.visible_hip_count,
+        "sh_hip_selected_pair": sh_hip_estimate.selected_pair,
+        "sh_hip_virtual_feet_point": sh_hip_estimate.point,
+        "sh_hip_virtual_feet_source": sh_hip_estimate.source,
+        "sh_hip_anchor_shoulder_point": sh_hip_estimate.shoulder_anchor,
+        "sh_hip_anchor_hip_point": sh_hip_estimate.hip_anchor,
         "virtual_feet_from_shoulder_hip": virtual_feet_from_shoulder_hip,
         "virtual_feet_from_shoulder_hip_source": virtual_feet_from_shoulder_hip_source,
-        "virtual_feet_from_two_shoulders": virtual_feet_from_two_shoulders,
-        "virtual_feet_from_two_shoulders_source": virtual_feet_from_two_shoulders_source,
         "selected_feet_point": selected_feet_point,
         "selected_feet_source": selected_feet_source,
         "shoulder_hip_feet_dx": shoulder_hip_feet_dx,
         "shoulder_hip_feet_dy": shoulder_hip_feet_dy,
         "shoulder_hip_feet_distance": shoulder_hip_feet_distance,
         "shoulder_hip_feet_compare_available": shoulder_hip_feet_compare_available,
-        "two_shoulders_feet_dx": two_shoulders_feet_dx,
-        "two_shoulders_feet_dy": two_shoulders_feet_dy,
-        "two_shoulders_feet_distance": two_shoulders_feet_distance,
-        "two_shoulders_feet_compare_available": two_shoulders_feet_compare_available,
         "shoulder_hip_scale_used": shoulder_hip_scale_used,
-        "two_shoulders_scale_used": two_shoulders_scale_used,
         "inside_feet_point": inside_feet_point,
         "inside_feet_point_source": inside_feet_point_source,
         "ankle_valid_count": ankle_valid_count,

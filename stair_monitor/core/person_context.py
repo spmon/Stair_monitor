@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from stair_monitor.common.types import BBoxArray, KeypointsArray, Point, PoseFeatures
+from stair_monitor.common.types import (
+    AnalysisSubjectID,
+    BBoxArray,
+    KeypointsArray,
+    Point,
+    PoseFeatures,
+)
 
 
 @dataclass(slots=True)
 class PersonContext:
-    track_id: int
+    track_id: AnalysisSubjectID
     keypoints: KeypointsArray
     box: BBoxArray | None
     features: PoseFeatures

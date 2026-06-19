@@ -12,6 +12,7 @@ Numeric: TypeAlias = int | float
 KeypointsArray: TypeAlias = NDArray[np.float32] | NDArray[np.float64]
 BBoxArray: TypeAlias = NDArray[np.float32] | NDArray[np.float64]
 PersonUID: TypeAlias = int
+AnalysisSubjectID: TypeAlias = int | str
 Direction: TypeAlias = Literal["UP", "DOWN", "IDLE", "ANALYZING", "UNKNOWN"]
 LaneSide: TypeAlias = Literal["LEFT", "RIGHT", "CENTER", "UNKNOWN"]
 BodyFacingLabel: TypeAlias = Literal["FRONT_TO_CAMERA", "BACK_TO_CAMERA", "UNKNOWN"]
@@ -30,11 +31,22 @@ HoldStatusLabel: TypeAlias = Literal[
     "ANALYZING",
     "OUTSIDE",
 ]
+HandrailStatusLabel: TypeAlias = Literal[
+    "OK",
+    "KHONG_VIN",
+    "VIN_SAI_BEN",
+    "SKIP_BACKWARD",
+    "WAIT_HOLD_CONFIRM",
+    "OUTSIDE",
+    "NOT_EVALUATED",
+]
 IdentityStatusLabel: TypeAlias = Literal[
     "CANDIDATE",
     "NEW",
     "ACTIVE",
     "RELINKED",
+    "TEMP_REID_CANDIDATE",
+    "AMBIGUOUS_REID",
     "LOST",
     "EXITED",
 ]
@@ -45,10 +57,38 @@ PersonSessionStatusLabel: TypeAlias = Literal[
     "COMPLETED",
 ]
 PersonSessionLifecycleLabel: TypeAlias = Literal[
+    "CANDIDATE_NO_FEET",
+    "CANDIDATE_INSIDE_NO_OUTSIDE_PROOF",
+    "CANDIDATE_WAIT_ENTER",
     "CANDIDATE_OUTSIDE",
+    "UNASSIGNED_INSIDE_CANDIDATE",
     "ACTIVE_INSIDE",
     "LOST_INSIDE",
+    "TEMP_REID_CANDIDATE",
+    "AMBIGUOUS_REID",
     "EXITED",
+]
+IdentityEntryReasonLabel: TypeAlias = Literal[
+    "NONE",
+    "CONFIRMED_ENTER",
+]
+ReLinkStateLabel: TypeAlias = Literal[
+    "NONE",
+    "RELINK_NO_MATCH",
+    "RELINK_WAIT_MORE_FRAMES",
+    "RELINK_CONFIRMED",
+    "RELINK_REJECTED_AMBIGUOUS",
+    "RELINK_REJECTED_ORDER_CONFLICT",
+]
+CountEventReasonLabel: TypeAlias = Literal[
+    "NO_COUNT_EVENT",
+    "ENTER_COUNTED_BY_FEET",
+    "EXIT_COUNTED_BY_FEET",
+    "ENTER_ALREADY_COUNTED",
+    "EXIT_ALREADY_COUNTED",
+    "TRACK_LOST_NO_EXIT_COUNT",
+    "BBOX_OUTSIDE_IGNORED_NO_EXIT_COUNT",
+    "RELINK_NO_RECOUNT",
 ]
 DebugInfoDict: TypeAlias = dict[str, object]
 KeypointValidDict: TypeAlias = dict[str, bool]
@@ -61,6 +101,15 @@ JsonDict: TypeAlias = dict[str, JsonValue]
 PointListJson: TypeAlias = list[list[int]]
 
 
+class StepLineJson(TypedDict):
+    id: int
+    p1: list[int]
+    p2: list[int]
+
+
+StepLineListJson: TypeAlias = list[StepLineJson]
+
+
 class CameraConfigDict(TypedDict, total=False):
     ROI: PointListJson
     CENTER_LINE: PointListJson
@@ -70,6 +119,7 @@ class CameraConfigDict(TypedDict, total=False):
     HANDRAIL_RIGHT_POLY: PointListJson
     STEP_BOTTOM: PointListJson
     STEP_TOP: PointListJson
+    STEP_LINES: StepLineListJson
 
 
 class PoseFeatures(TypedDict, total=False):
@@ -84,6 +134,8 @@ class PoseFeatures(TypedDict, total=False):
     right_ear: Point | None
     left_ankle: Point | None
     right_ankle: Point | None
+    left_ankle_conf: float
+    right_ankle_conf: float
     left_wrist: Point | None
     right_wrist: Point | None
     left_elbow: Point | None
@@ -103,24 +155,26 @@ class PoseFeatures(TypedDict, total=False):
     motion_point: Point | None
     feet_point: Point | None
     feet_point_source: str
+    feet_available: bool
+    feet_unavailable_reason: str
     real_feet_point: Point | None
     real_feet_source: str
+    sh_hip_visible_shoulder_count: int
+    sh_hip_visible_hip_count: int
+    sh_hip_selected_pair: str
+    sh_hip_virtual_feet_point: Point | None
+    sh_hip_virtual_feet_source: str
+    sh_hip_anchor_shoulder_point: Point | None
+    sh_hip_anchor_hip_point: Point | None
     virtual_feet_from_shoulder_hip: Point | None
     virtual_feet_from_shoulder_hip_source: str
-    virtual_feet_from_two_shoulders: Point | None
-    virtual_feet_from_two_shoulders_source: str
     selected_feet_point: Point | None
     selected_feet_source: str
     shoulder_hip_feet_dx: int | None
     shoulder_hip_feet_dy: int | None
     shoulder_hip_feet_distance: float | None
     shoulder_hip_feet_compare_available: bool
-    two_shoulders_feet_dx: int | None
-    two_shoulders_feet_dy: int | None
-    two_shoulders_feet_distance: float | None
-    two_shoulders_feet_compare_available: bool
     shoulder_hip_scale_used: float
-    two_shoulders_scale_used: float
     inside_feet_point: Point | None
     inside_feet_point_source: str
     ankle_valid_count: int
@@ -146,9 +200,12 @@ class AnalysisResult(TypedDict, total=False):
     status: str
     display_status: str
     color: ColorBGR
-    track_id: int
+    track_id: AnalysisSubjectID
     person_uid: PersonUID
     person_uid_label: str
+    analysis_subject_id: str
+    analysis_subject_label: str
+    merged_from_analysis_subject_id: str
     yolo_track_id: int | None
     previous_yolo_track_id: int | None
     identity_status: IdentityStatusLabel
@@ -156,13 +213,32 @@ class AnalysisResult(TypedDict, total=False):
     session_lifecycle: PersonSessionLifecycleLabel
     identity_debug: str
     identity_feet_source: str
+    identity_feet_reason: str
     identity_gate_reason: str
+    identity_inside_test: str
+    identity_entry_reason: IdentityEntryReasonLabel
+    identity_outside_proof: bool
+    identity_enter_confirm_hits: int
+    identity_enter_confirm_target: int
     has_active_person_id: bool
     relink_score: float | None
     relink_frame_gap: int
+    relink_score_gap: float | None
+    relink_best_candidate: str
+    relink_second_candidate: str
+    relink_state: ReLinkStateLabel
+    total_entered_count: int
+    total_exited_count: int
     entered_count: int
     exited_count: int
+    active_inside_count: int
+    lost_inside_count: int
     active_or_lost_inside_count: int
+    current_person_id: str
+    person_lifecycle_state: PersonSessionLifecycleLabel
+    has_counted_enter: bool
+    has_counted_exit: bool
+    count_event_reason: CountEventReasonLabel
     dy: Numeric | None
     direction_dy: Numeric | None
     lane_v: Numeric | None
@@ -197,11 +273,73 @@ class AnalysisResult(TypedDict, total=False):
     inside_feet_point: Point | None
     feet_point_source: str
     inside_feet_point_source: str
+    feet_available: bool
+    feet_unavailable_reason: str
+    sh_hip_visible_shoulder_count: int
+    sh_hip_visible_hip_count: int
+    sh_hip_selected_pair: str
+    sh_hip_virtual_feet_point: Point | None
+    sh_hip_virtual_feet_source: str
     ankle_valid_count: int
     feet_reliable: bool
     bbox_height: int | None
     left_ankle_valid: bool
     right_ankle_valid: bool
+    left_ankle_point: Point | None
+    right_ankle_point: Point | None
+    left_ankle_raw_point: Point | None
+    right_ankle_raw_point: Point | None
+    left_ankle_step_point: Point | None
+    right_ankle_step_point: Point | None
+    left_ankle_conf: float
+    right_ankle_conf: float
+    left_current_ankle_step: int | None
+    right_current_ankle_step: int | None
+    left_raw_ankle_step: int | None
+    right_raw_ankle_step: int | None
+    left_raw_step: int | None
+    right_raw_step: int | None
+    left_filtered_step: int | None
+    right_filtered_step: int | None
+    left_last_valid_step: int | None
+    right_last_valid_step: int | None
+    left_step_filter_reason: str
+    right_step_filter_reason: str
+    left_adjusted_step: int | None
+    right_adjusted_step: int | None
+    ankle_step_offset_x: int
+    ankle_step_offset_y: int
+    ankle_step_offset_direction: str
+    left_step_reason: str
+    right_step_reason: str
+    left_step_nearest_band_id: int | None
+    right_step_nearest_band_id: int | None
+    left_step_nearest_distance: float | None
+    right_step_nearest_distance: float | None
+    left_step_is_inside: bool
+    right_step_is_inside: bool
+    left_step_is_near_boundary: bool
+    right_step_is_near_boundary: bool
+    left_step_index: int | None
+    right_step_index: int | None
+    foot_gap: int | None
+    step_gap: int | None
+    left_planted_step: int | None
+    right_planted_step: int | None
+    planted_step_gap: int | None
+    left_is_planted: bool
+    right_is_planted: bool
+    left_ankle_speed: float | None
+    right_ankle_speed: float | None
+    left_foot_step_reason: str
+    right_foot_step_reason: str
+    left_foot_state_label: str
+    right_foot_state_label: str
+    left_foot_landed: bool
+    right_foot_landed: bool
+    two_step_skip_check_available: bool
+    two_step_skip_reason: str
+    two_step_skip_confirmed: bool
     left_foot_in: bool
     right_foot_in: bool
     valid_foot_count: int
@@ -236,28 +374,31 @@ class AnalysisResult(TypedDict, total=False):
     right_carry_raw_before_claim: bool
     left_carry_raw_after_claim: bool
     right_carry_raw_after_claim: bool
-    hold_status_correct: HoldStatusLabel
-    hold_status_wrong: HoldStatusLabel
-    dist_wrist: Numeric
-    wrist_side: str
-    best_wrist: str
-    best_wrist_point: Point | None
-    dist_correct: Numeric
-    dist_wrong: Numeric
-    seg_dist_correct: Numeric | None
-    seg_dist_wrong: Numeric | None
-    t_correct: Numeric | None
-    t_wrong: Numeric | None
-    wrist_side_correct: str
-    wrist_side_wrong: str
-    best_wrist_correct: str
-    best_wrist_wrong: str
-    best_wrist_correct_point: Point | None
-    best_wrist_wrong_point: Point | None
-    correct_line_name: str
-    wrong_line_name: str
-    correct_rule: str
-    wrong_rule: str
+    left_wrist_valid: bool
+    right_wrist_valid: bool
+    left_wrist_hit: bool
+    right_wrist_hit: bool
+    left_wrist_hit_count: int
+    right_wrist_hit_count: int
+    left_wrist_miss_count: int
+    right_wrist_miss_count: int
+    left_wrist_confirm_required: int
+    right_wrist_confirm_required: int
+    left_wrist_distance_to_left_rail: float | None
+    left_wrist_distance_to_right_rail: float | None
+    right_wrist_distance_to_left_rail: float | None
+    right_wrist_distance_to_right_rail: float | None
+    left_wrist_nearest_distance: float | None
+    right_wrist_nearest_distance: float | None
+    left_wrist_nearest_rail: str
+    right_wrist_nearest_rail: str
+    left_wrist_nearest_point: Point | None
+    right_wrist_nearest_point: Point | None
+    left_holding: bool
+    right_holding: bool
+    handrail_status: HandrailStatusLabel
+    handrail_reason: str
+    handrail_debug_reason: str
     is_carrying: bool
     carry_type: str
     left_arm_angle: Numeric | None
@@ -287,6 +428,14 @@ class AnalysisResult(TypedDict, total=False):
     front_carry_confirmed: bool
     left_carry: bool
     right_carry: bool
+    left_carry_allowed: bool
+    right_carry_allowed: bool
+    left_carry_evidence: bool
+    right_carry_evidence: bool
+    left_carry_score: Numeric | None
+    right_carry_score: Numeric | None
+    one_hand_carry_side: str
+    carry_reason: str
     carrying_arm: str
     p_lane: Point | None
     p_motion: Point | None

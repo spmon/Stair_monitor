@@ -16,6 +16,7 @@ from stair_monitor.debug.snapshots import (
 )
 from stair_monitor.output.rendering import (
     VietnameseTextDrawer,
+    draw_demo_violation_alerts,
     draw_person_overlay,
     draw_scene_guides,
 )
@@ -37,13 +38,20 @@ def process_video():
     # Mo video input/offline demo.
     cap = cv2.VideoCapture(SETTINGS.video.input_path)
     out = None
+    source_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    output_fps = source_fps if source_fps > 0.0 else 15.0
+    demo_alert_hold_frames = max(
+        1,
+        int(round(output_fps * SETTINGS.demo.demo_alert_hold_seconds)),
+    )
+    active_alert_until_frame: dict[str, int] = {}
 
     if SETTINGS.video.save_output_video:
         # Mo writer output neu can luu lai video demo da ve overlay.
         out = cv2.VideoWriter(
             SETTINGS.video.output_path,
             cv2.VideoWriter_fourcc(*"mp4v"),
-            15,
+            output_fps,
             (int(cap.get(3)), int(cap.get(4))),
         )
 
@@ -109,7 +117,9 @@ def process_video():
                 else None
             )
 
-            if SETTINGS.demo.draw_debug and not SETTINGS.demo.demo_mode:
+            if SETTINGS.demo.draw_debug and (
+                not SETTINGS.demo.demo_mode or SETTINGS.demo.handrail_debug_only
+            ):
                 draw_scene_guides(overlay_frame, CONFIG, analyzer)
 
             if (
@@ -138,28 +148,38 @@ def process_video():
                     p_lane = features.get("feet_point")
                     p_motion = features.get("motion_point")
 
-                    if (
-                        identity_result.has_active_person_id
-                        and identity_result.person_uid is not None
-                    ):
-                        # Chi dua vao analyzer/history chinh sau khi trusted feet
-                        # da ENTER va duoc promote thanh stable person_id.
+                    merge_from_subject_id = identity_result.merged_from_analysis_subject_id
+                    if merge_from_subject_id:
+                        analyzer.merge_behavior_history(
+                            merge_from_subject_id,
+                            identity_result.analysis_subject_id,
+                        )
+
+                    if identity_result.analysis_subject_id:
                         analysis = analyzer.analyze(
-                            identity_result.person_uid,
+                            identity_result.analysis_subject_id,
                             p_lane,
                             p_motion,
                             kpt,
                             box=box,
                             features=features,
                         )
-                        identity_manager.update_from_analysis(
-                            identity_result.person_uid,
-                            analysis,
-                        )
+                        if identity_result.person_uid is not None:
+                            identity_manager.update_from_analysis(
+                                identity_result.person_uid,
+                                analysis,
+                            )
                         identity_manager.augment_analysis_result(
                             analysis,
                             identity_result,
                         )
+                        for warning in analysis.get("warnings", []):
+                            if warning not in SETTINGS.violation.count_labels:
+                                continue
+                            active_alert_until_frame[warning] = max(
+                                active_alert_until_frame.get(warning, -1),
+                                analyzer.frame_index + demo_alert_hold_frames - 1,
+                            )
 
                         if perf_totals is not None:
                             accumulate_analysis_perf(
@@ -167,8 +187,6 @@ def process_video():
                                 analysis.get("perf"),
                             )
                     else:
-                        # Candidate/ghost/exited van duoc ve overlay,
-                        # nhung khong di vao behavior history chinh.
                         analysis = identity_manager.build_overlay_result(
                             identity_result
                         )
@@ -185,9 +203,20 @@ def process_video():
                         text_drawer=text_drawer,
                     )
 
+            active_alert_until_frame = {
+                warning: until_frame
+                for warning, until_frame in active_alert_until_frame.items()
+                if until_frame >= analyzer.frame_index
+            }
+            if SETTINGS.demo.demo_mode and not SETTINGS.demo.handrail_debug_only:
+                draw_demo_violation_alerts(
+                    overlay_frame,
+                    active_alert_until_frame,
+                )
+
             identity_manager.end_frame()
             analyzer.cleanup_inactive_tracks(
-                identity_manager.get_retained_person_uids()
+                identity_manager.get_retained_analysis_subject_ids()
             )
 
             if perf_totals is not None and overlay_start is not None:

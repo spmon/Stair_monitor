@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
-from stair_monitor.common.types import CameraConfigDict, ColorBGR
+from stair_monitor.common.types import CameraConfigDict, ColorBGR, StepLineJson
 
 
 @dataclass(frozen=True)
@@ -13,15 +13,15 @@ class VideoConfig:
     # Video dau vao cua ban Windows/demo.
     input_path: str = field(
         default_factory=lambda: str(
-            Path("video") / "raw_video"/ "record_2026-06-10_17-41-44.avi"
+            Path("video") / "raw_video"/ "record_2026-06-10_17-43-50.avi"
         )
     )
     # Video output sau khi da ve overlay.
     output_path: str = field(
-        default_factory=lambda: str(Path("video") / "stair_demo" / "demo45.mp4")
+        default_factory=lambda: str(Path("video") / "stair_demo" / "demo50.mp4")
     )
     # JSON chua line/polygon ROI, lane va handrail.
-    camera_config_path: str = field(default_factory=lambda: str(Path("camera_config.json")))
+    camera_config_path: str = field(default_factory=lambda: str(Path("camera_config6.json")))
     # Luu video output sau khi ve overlay.
     save_output_video: bool = True
     # Luu snapshot input/final de debug model input.
@@ -33,9 +33,9 @@ class VideoConfig:
 @dataclass(frozen=True)
 class DemoOverlayConfig:
     # Bat giao dien demo gon hoac giao dien debug day du.
-    demo_mode: bool = False
+    demo_mode: bool = True
     # Flag tong de bat/tat thong tin debug phuc vu quan sat demo.
-    enable_debug_overlay: bool = True
+    enable_debug_overlay: bool = False
     # Bat debug text chi tiet cho tung nguoi.
     enable_verbose_person_debug: bool = False
     # Bat ve skeleton tay/than de quan sat pose.
@@ -46,10 +46,16 @@ class DemoOverlayConfig:
     draw_safe_status: bool = False
     # Demo badge canh bao se duoc giu them N giay.
     demo_alert_hold_seconds: float = 1.0
+    # Khi bat chi render debug handrail gon: wrist, distance, hit/miss va ket luan.
+    show_handrail_debug_only: bool = True
+    # Ve line tu wrist toi diem gan nhat tren handrail khi debug handrail.
+    show_handrail_distance_lines: bool = True
+    # Ve text khoang cach ngan gon cho wrist khi debug handrail.
+    show_handrail_distance_text: bool = True
 
     @property
     def draw_debug(self) -> bool:
-        return self.enable_debug_overlay
+        return self.enable_debug_overlay or self.show_handrail_debug_only
 
     @property
     def draw_debug_detail(self) -> bool:
@@ -61,7 +67,11 @@ class DemoOverlayConfig:
 
     @property
     def draw_keypoints(self) -> bool:
-        return self.enable_debug_overlay
+        return self.draw_debug
+
+    @property
+    def handrail_debug_only(self) -> bool:
+        return self.show_handrail_debug_only
 
 
 @dataclass(frozen=True)
@@ -75,6 +85,7 @@ class ViolationDisplayConfig:
             "Mang Vac": "Mang đồ",
             "Di Lui": "Đi lùi",
             "Dung Yen": "Không di chuyển",
+            "Buoc 2 Bac": "Bước 2 Bậc",
         }
     )
     # Thu tu uu tien khi hien thi alert vi pham.
@@ -86,6 +97,7 @@ class ViolationDisplayConfig:
             "Mang Vac",
             "Di Lui",
             "Dung Yen",
+            "Buoc 2 Bac",
         ]
     )
     # Mau cho trang thai an toan.
@@ -170,9 +182,9 @@ class CarryConfig:
     # So hit toi thieu de xac nhan carry 2 tay.
     front_carry_min_hits: int = 12
     # Chieu dai history carry 1 tay ro rang.
-    front_carry_one_arm_history_len: int = 15
+    front_carry_one_arm_history_len: int = 18
     # So hit toi thieu de xac nhan carry 1 tay.
-    front_carry_one_arm_min_hits: int = 12
+    front_carry_one_arm_min_hits: int = 18
     # Nguong ngang dong theo shoulder width cho "hai co tay gan nhau".
     wrist_together_x_ratio: float = 1.2
     # Nguong doc dong theo torso height cho "hai co tay gan nhau".
@@ -220,9 +232,7 @@ class StandingConfig:
 @dataclass(frozen=True)
 class VirtualFeetConfig:
     # Scale trung tinh cho virtual feet shoulder + hip.
-    shoulder_hip_scale: float = 1.0
-    # Scale trung tinh cho virtual feet two shoulders.
-    two_shoulders_scale: float = 2.3
+    shoulder_hip_scale: float = 0.85
 
 
 @dataclass(frozen=True)
@@ -237,6 +247,8 @@ class PersonIdentityConfig:
     candidate_timeout_frames: int = 45
     # So frame toi da cho phep session o LOST truoc khi xem xet complete.
     max_lost_frames: int = 30
+    # So frame toi da de ghost con duoc xem xet relink an toan.
+    relink_max_lost_frames: int = 30
     # So frame ghost duoc giu them neu mat giua cau thang va chua exit hop le.
     lost_inside_extra_frames: int = 45
     # Nguong khoang cach toi da de relink detection moi vao ghost session cu.
@@ -245,10 +257,67 @@ class PersonIdentityConfig:
     relink_max_bbox_size_ratio_diff: float = 0.5
     # Score tong hop toi da de chap nhan relink; score cang thap cang tot.
     relink_score_threshold: float = 1.0
+    # Muc chenh toi thieu giua best va second-best de xem match la ro rang.
+    relink_ambiguity_margin: float = 0.35
+    # So frame can giu temp candidate truoc khi commit relink.
+    relink_min_confirm_frames: int = 3
+    # Khoang cach toi thieu tren truc cau thang de xet dao thu tu la conflict.
+    relink_order_min_separation_px: int = 24
     # Margin top/bottom cua vung cau thang de xem la exit hop le.
     exit_zone_margin_px: int = 100
     # Bat log cac event identity quan trong.
     log_events: bool = True
+
+
+@dataclass(frozen=True)
+class StepBandConfig:
+    # Margin an toan quanh ranh gioi STEP_BAND khi map ankle vao step_index.
+    boundary_margin_px: int = 2
+    # Cho phep point hoi lech ngoai polygon van bam vao band gan nhat de debug on dinh hon.
+    outside_tolerance_px: int = 20
+    # Bat hien thi reason raw step debug tren overlay.
+    debug_show_reason: bool = True
+    # Bat ve outline nhe cua STEP_BANDS khi debug overlay dang bat.
+    debug_show_bands: bool = True
+
+
+@dataclass(frozen=True)
+class TwoStepSkipConfig:
+    # Bat/tat logic canh bao "Buoc 2 Bac".
+    enabled: bool = True
+    # Hai ankle lech it nhat bao nhieu bac moi xem la vi pham.
+    min_step_gap: int = 2
+    # So frame lien tiep can giu gap >= nguong de xac nhan.
+    confirm_frames: int = 1
+    # Bat bo loc monotonic theo direction cho step cua tung chan.
+    two_step_use_monotonic_filter: bool = True
+    # True neu step_index tang dan theo chieu di len.
+    two_step_step_index_increases_when_up: bool = True
+    # So frame duoc phep giu last_valid_step khi raw step bi reject/mat tam thoi.
+    two_step_hold_last_valid_step_frames: int = 3
+    # Cho phep step giu nguyen cung 1 bac ma van hop le theo filter.
+    two_step_allow_same_step: bool = True
+    # Nguong confidence toi thieu cua moi ankle that de tham gia check.
+    ankle_conf_threshold: float = 0.5
+    # So raw step frame gan nhat duoc giu lai de lam muot planted state.
+    foot_step_history_window: int = 3
+    # So frame toi thieu de xem 1 step candidate da du on dinh.
+    foot_planted_confirm_frames: int = 1
+    # Nguong speed toi da de 1 ankle duoc xem la dang dat on dinh tren bac.
+    foot_planted_max_speed_px_per_frame: float = 30.0
+    # Cho phep tat speed check neu video 15 FPS khien planted bi miss qua nhieu.
+    foot_planted_use_speed_check: bool = False
+    # Bat/tat offset theo direction cho diem map ankle vao STEP_BAND.
+    use_directional_ankle_offset: bool = True
+    # Offset mac dinh khi direction la UP.
+    up_ankle_step_offset_x_px: int = 0
+    up_ankle_step_offset_y_px: int = 20
+    # Offset mac dinh khi direction la DOWN.
+    down_ankle_step_offset_x_px: int = 0
+    down_ankle_step_offset_y_px: int = 0
+    # Offset fallback khi direction chua xac dinh hoac khong co last valid.
+    unknown_ankle_step_offset_x_px: int = 0
+    unknown_ankle_step_offset_y_px: int = 0
 
 
 @dataclass(frozen=True)
@@ -273,10 +342,69 @@ class AppSettings:
     standing: StandingConfig = field(default_factory=StandingConfig)
     virtual_feet: VirtualFeetConfig = field(default_factory=VirtualFeetConfig)
     identity: PersonIdentityConfig = field(default_factory=PersonIdentityConfig)
+    step_band: StepBandConfig = field(default_factory=StepBandConfig)
+    two_step_skip: TwoStepSkipConfig = field(default_factory=TwoStepSkipConfig)
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
 
 
 SETTINGS = AppSettings()
+
+
+def _normalize_step_line_point(raw_point: object) -> list[int] | None:
+    if not isinstance(raw_point, (list, tuple)) or len(raw_point) != 2:
+        return None
+
+    x_value, y_value = raw_point
+    if not isinstance(x_value, (int, float)) or not isinstance(y_value, (int, float)):
+        return None
+    return [int(x_value), int(y_value)]
+
+
+def _normalize_step_line_id(raw_id: object, fallback_id: int) -> int:
+    if raw_id is None:
+        return fallback_id
+    if isinstance(raw_id, int):
+        return raw_id
+    if isinstance(raw_id, float) and raw_id.is_integer():
+        return int(raw_id)
+    return fallback_id
+
+
+def _normalize_step_line_entry(
+    raw_step_line: object,
+    fallback_id: int,
+) -> StepLineJson | None:
+    if not isinstance(raw_step_line, dict):
+        return None
+
+    point_1 = _normalize_step_line_point(raw_step_line.get("p1"))
+    point_2 = _normalize_step_line_point(raw_step_line.get("p2"))
+    if point_1 is None or point_2 is None:
+        return None
+
+    return {
+        "id": _normalize_step_line_id(raw_step_line.get("id"), fallback_id),
+        "p1": point_1,
+        "p2": point_2,
+    }
+
+
+def _normalize_step_lines(raw_step_lines: object) -> list[StepLineJson]:
+    if not isinstance(raw_step_lines, list):
+        return []
+
+    normalized_lines: list[StepLineJson] = []
+    for fallback_id, raw_step_line in enumerate(raw_step_lines):
+        normalized_step_line = _normalize_step_line_entry(
+            raw_step_line,
+            fallback_id,
+        )
+        if normalized_step_line is None:
+            continue
+        normalized_lines.append(normalized_step_line)
+
+    normalized_lines.sort(key=lambda step_line: step_line["id"])
+    return normalized_lines
 
 
 def load_camera_config(path: str | None = None) -> CameraConfigDict:
@@ -305,4 +433,5 @@ def load_camera_config(path: str | None = None) -> CameraConfigDict:
         print("camera_config.json khong dung dinh dang dict!")
         raise SystemExit(1)
 
+    raw_config["STEP_LINES"] = _normalize_step_lines(raw_config.get("STEP_LINES"))
     return cast(CameraConfigDict, raw_config)

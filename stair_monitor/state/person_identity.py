@@ -6,16 +6,20 @@ from math import hypot, inf
 import numpy as np
 
 from stair_monitor.common.types import (
+    AnalysisSubjectID,
     AnalysisResult,
     BBox,
     BBoxArray,
     CameraConfigDict,
+    CountEventReasonLabel,
+    IdentityEntryReasonLabel,
     IdentityStatusLabel,
     PersonSessionLifecycleLabel,
     PersonSessionStatusLabel,
     PersonUID,
     Point,
     PoseFeatures,
+    ReLinkStateLabel,
 )
 from stair_monitor.config.settings import SETTINGS
 from stair_monitor.rules.inside_rule import is_inside_stairs
@@ -27,7 +31,6 @@ TRUSTED_FEET_SOURCES = frozenset(
         "REAL_LEFT_ANKLE",
         "REAL_RIGHT_ANKLE",
         "VIRTUAL_FROM_SHOULDER_HIP",
-        "VIRTUAL_FROM_TWO_SHOULDERS",
     }
 )
 
@@ -37,6 +40,9 @@ class IdentityUpdateResult:
     has_active_person_id: bool
     person_uid: PersonUID | None
     person_uid_label: str
+    analysis_subject_id: str
+    analysis_subject_label: str
+    merged_from_analysis_subject_id: str
     yolo_track_id: int | None
     previous_yolo_track_id: int | None
     identity_status: IdentityStatusLabel
@@ -44,9 +50,22 @@ class IdentityUpdateResult:
     session_lifecycle: PersonSessionLifecycleLabel
     identity_debug: str
     identity_feet_source: str
+    identity_feet_reason: str
     identity_gate_reason: str
+    identity_inside_test: str
+    identity_entry_reason: IdentityEntryReasonLabel
+    identity_outside_proof: bool
+    identity_enter_confirm_hits: int
+    identity_enter_confirm_target: int
     relink_score: float | None
     relink_frame_gap: int
+    relink_score_gap: float | None
+    relink_best_candidate: str
+    relink_second_candidate: str
+    relink_state: ReLinkStateLabel
+    has_counted_enter: bool
+    has_counted_exit: bool
+    count_event_reason: CountEventReasonLabel
 
 
 @dataclass(slots=True)
@@ -57,10 +76,23 @@ class CandidateSession:
     last_bbox: BBox | None
     last_bbox_center: Point | None
     last_anchor_point: Point | None
+    previous_anchor_point: Point | None
+    last_path_position: float | None
     last_trusted_feet_point: Point | None
     last_trusted_feet_source: str
+    has_trusted_feet_outside: bool = False
     entry_confirm_hits: int = 0
     last_gate_reason: str = "WAIT_TRUSTED_FEET_ENTER"
+    relink_confirm_hits: int = 0
+    pending_relink_person_uid: PersonUID | None = None
+    pending_relink_best_score: float | None = None
+    pending_relink_second_score: float | None = None
+    pending_relink_score_gap: float | None = None
+    pending_relink_frame_gap: int = 0
+    pending_relink_best_label: str = ""
+    pending_relink_second_label: str = ""
+    pending_relink_state: ReLinkStateLabel = "NONE"
+    last_relink_log_signature: str = ""
 
 
 @dataclass(slots=True)
@@ -78,6 +110,7 @@ class PersonSession:
     last_motion_point_shoulder: Point | None
     last_anchor_point: Point | None
     previous_anchor_point: Point | None
+    last_path_position: float | None
     last_direction: str
     last_lane_side: str | None
     last_track_zone_state: str
@@ -89,10 +122,37 @@ class PersonSession:
     last_identity_status: IdentityStatusLabel = "NEW"
     last_identity_debug: str = "NEW"
     last_gate_reason: str = "ENTERED_BY_FEET"
+    entry_reason: IdentityEntryReasonLabel = "NONE"
     last_relink_score: float | None = None
     last_relink_frame_gap: int = 0
-    entered_counted: bool = False
-    exited_counted: bool = False
+    has_counted_enter: bool = False
+    has_counted_exit: bool = False
+    last_count_event_reason: CountEventReasonLabel = "NO_COUNT_EVENT"
+
+
+@dataclass(slots=True)
+class ReLinkCandidateScore:
+    session: PersonSession
+    score: float
+    frame_gap: int
+    score_reason: str
+    reject_reason: str | None
+
+
+@dataclass(slots=True)
+class ReLinkDecision:
+    state: ReLinkStateLabel
+    best_candidate: ReLinkCandidateScore | None
+    second_candidate: ReLinkCandidateScore | None
+    score_gap: float | None
+    confirm_hits: int = 0
+
+
+@dataclass(slots=True)
+class PendingReLink:
+    yolo_track_id: int
+    target_person_uid: PersonUID | None
+    state: ReLinkStateLabel
 
 
 class PersonIdentityManager:
@@ -102,12 +162,14 @@ class PersonIdentityManager:
         self.next_person_uid: PersonUID = 1
         self.person_sessions: dict[PersonUID, PersonSession] = {}
         self.candidate_sessions: dict[int, CandidateSession] = {}
+        self.pending_relink_by_yolo_id: dict[int, PendingReLink] = {}
         self.yolo_to_person: dict[int, PersonUID] = {}
+        self.new_person_guard_log_by_yolo_id: dict[int, str] = {}
         self.current_frame_index = -1
         self.seen_person_uids_this_frame: set[PersonUID] = set()
         self.seen_yolo_ids_this_frame: set[int] = set()
-        self.entered_count = 0
-        self.exited_count = 0
+        self.total_entered_count = 0
+        self.total_exited_count = 0
 
         self.center_line: list[Point] = []
         raw_center_line = config.get("CENTER_LINE", [])
@@ -140,6 +202,24 @@ class PersonIdentityManager:
         if person_uid is None:
             return ""
         return f"P{person_uid:04d}"
+
+    @staticmethod
+    def _format_candidate_analysis_subject_id(yolo_track_id: int | None) -> str:
+        if yolo_track_id is None:
+            return ""
+        return f"CANDIDATE_YOLO_{yolo_track_id}"
+
+    @staticmethod
+    def _format_candidate_analysis_label(yolo_track_id: int | None) -> str:
+        if yolo_track_id is None:
+            return "CANDIDATE NA"
+        return f"CANDIDATE {yolo_track_id}"
+
+    @staticmethod
+    def _format_session_lifecycle_display(session_lifecycle: str) -> str:
+        if session_lifecycle.startswith("CANDIDATE_"):
+            return "CANDIDATE " + session_lifecycle.removeprefix("CANDIDATE_")
+        return session_lifecycle.replace("_", " ")
 
     @staticmethod
     def _normalize_bbox(
@@ -232,7 +312,7 @@ class PersonIdentityManager:
         features: PoseFeatures,
     ) -> tuple[Point | None, str]:
         feet_point = features.get("feet_point")
-        feet_source = str(features.get("feet_point_source", "NO_FEET_POINT"))
+        feet_source = str(features.get("feet_point_source", "FEET_UNAVAILABLE"))
         if feet_point is None or not self._is_trusted_feet_source(feet_source):
             return None, "NO_TRUSTED_FEET"
         return feet_point, feet_source
@@ -246,6 +326,89 @@ class PersonIdentityManager:
         if self.stairs_poly is None or len(self.stairs_poly) < 3:
             return None
         return bool(is_inside_stairs(self.stairs_poly, trusted_feet_point))
+
+    @staticmethod
+    def _get_candidate_feet_context(
+        features: PoseFeatures,
+        trusted_feet_point: Point | None,
+    ) -> tuple[str, str]:
+        feet_source = str(features.get("feet_point_source", "FEET_UNAVAILABLE"))
+        if trusted_feet_point is not None:
+            return feet_source, "NONE"
+
+        feet_reason = str(
+            features.get("feet_unavailable_reason", "NO_SHOULDER_NO_HIP")
+        )
+        if feet_reason == "NONE":
+            return feet_source, "NO_TRUSTED_FEET"
+        return feet_source, feet_reason
+
+    @staticmethod
+    def _normalize_candidate_gate_reason(gate_reason: str) -> str:
+        if gate_reason == "NEW_PERSON_BLOCKED_PENDING_RELINK":
+            return "BLOCKED_BY_PENDING_RELINK"
+        if gate_reason == "NEW_PERSON_BLOCKED_GHOST_MATCH":
+            return "BLOCKED_BY_GHOST_CANDIDATE"
+        return gate_reason
+
+    @staticmethod
+    def _update_candidate_proof_state(
+        candidate: CandidateSession,
+        trusted_feet_point: Point | None,
+        trusted_inside: bool | None,
+    ) -> None:
+        if trusted_feet_point is None:
+            candidate.entry_confirm_hits = 0
+            return
+
+        if trusted_inside is False:
+            candidate.has_trusted_feet_outside = True
+            candidate.entry_confirm_hits = 0
+            return
+
+        if trusted_inside is True:
+            if candidate.has_trusted_feet_outside:
+                candidate.entry_confirm_hits += 1
+            else:
+                candidate.entry_confirm_hits = 0
+            return
+
+        candidate.entry_confirm_hits = 0
+
+    @staticmethod
+    def _get_candidate_session_lifecycle(
+        candidate: CandidateSession,
+        trusted_feet_point: Point | None,
+        trusted_inside: bool | None,
+        *,
+        allow_new_person: bool,
+    ) -> PersonSessionLifecycleLabel:
+        if trusted_feet_point is None:
+            return "CANDIDATE_NO_FEET"
+        if trusted_inside is False:
+            return "CANDIDATE_OUTSIDE"
+        if trusted_inside is True:
+            if not candidate.has_trusted_feet_outside:
+                if not allow_new_person:
+                    return "UNASSIGNED_INSIDE_CANDIDATE"
+                return "CANDIDATE_INSIDE_NO_OUTSIDE_PROOF"
+            if not allow_new_person:
+                return "UNASSIGNED_INSIDE_CANDIDATE"
+            return "CANDIDATE_WAIT_ENTER"
+        return "UNASSIGNED_INSIDE_CANDIDATE"
+
+    @staticmethod
+    def _get_candidate_inside_test(
+        trusted_feet_point: Point | None,
+        trusted_inside: bool | None,
+    ) -> str:
+        if trusted_feet_point is None:
+            return "NO_TRUSTED_FEET"
+        if trusted_inside is True:
+            return "INSIDE_ROI"
+        if trusted_inside is False:
+            return "OUTSIDE_ROI"
+        return "ROI_UNAVAILABLE"
 
     def _get_detection_lane_side(self, features: PoseFeatures) -> str | None:
         if len(self.center_line) < 2:
@@ -262,6 +425,37 @@ class PersonIdentityManager:
         if lane_side_label == "UNKNOWN":
             return None
         return lane_side_label
+
+    def _get_path_position(self, point: Point | None) -> float | None:
+        if point is None:
+            return None
+
+        if len(self.center_line) < 2:
+            return float(point[1])
+
+        start_point = self.center_line[0]
+        end_point = self.center_line[1]
+        line_dx = float(end_point[0] - start_point[0])
+        line_dy = float(end_point[1] - start_point[1])
+        line_length = hypot(line_dx, line_dy)
+        if line_length <= 0.0:
+            return float(point[1])
+
+        relative_x = float(point[0] - start_point[0])
+        relative_y = float(point[1] - start_point[1])
+        return (relative_x * line_dx + relative_y * line_dy) / line_length
+
+    def _get_detection_path_position(
+        self,
+        features: PoseFeatures,
+        bbox: BBox | None,
+    ) -> float | None:
+        point = (
+            features.get("feet_point")
+            or features.get("inside_feet_point")
+            or self._select_anchor_point(features, bbox)
+        )
+        return self._get_path_position(point)
 
     def _approx_direction_from_points(
         self,
@@ -295,6 +489,99 @@ class PersonIdentityManager:
         if SETTINGS.identity.log_events:
             print(message)
 
+    @staticmethod
+    def _normalize_relink_log_value(value: float | None) -> str:
+        if value is None or value == inf:
+            return "NA"
+        return f"{value:.2f}"
+
+    def _is_bbox_center_inside_stairs(
+        self,
+        bbox: BBox | None,
+    ) -> bool | None:
+        bbox_center = self._get_bbox_center(bbox)
+        if bbox_center is None or self.stairs_poly is None or len(self.stairs_poly) < 3:
+            return None
+        return bool(is_inside_stairs(self.stairs_poly, bbox_center))
+
+    def _set_session_count_event_reason(
+        self,
+        session: PersonSession,
+        reason: CountEventReasonLabel,
+        *,
+        log_message: str | None = None,
+        log_only_on_change: bool = False,
+    ) -> CountEventReasonLabel:
+        reason_changed = session.last_count_event_reason != reason
+        session.last_count_event_reason = reason
+        if log_message is not None and (not log_only_on_change or reason_changed):
+            self._log_event(log_message)
+        return reason
+
+    def _count_session_enter(
+        self,
+        session: PersonSession,
+    ) -> CountEventReasonLabel:
+        if session.has_counted_enter:
+            return self._set_session_count_event_reason(
+                session,
+                "ENTER_ALREADY_COUNTED",
+            )
+
+        session.has_counted_enter = True
+        self.total_entered_count += 1
+        return self._set_session_count_event_reason(
+            session,
+            "ENTER_COUNTED_BY_FEET",
+            log_message=(
+                "COUNT_ENTER "
+                f"person_id={self._format_person_uid(session.person_uid)} "
+                f"total_entered={self.total_entered_count}"
+            ),
+        )
+
+    def _count_session_exit(
+        self,
+        session: PersonSession,
+    ) -> CountEventReasonLabel:
+        if session.has_counted_exit:
+            return self._set_session_count_event_reason(
+                session,
+                "EXIT_ALREADY_COUNTED",
+            )
+
+        session.has_counted_exit = True
+        self.total_exited_count += 1
+        return self._set_session_count_event_reason(
+            session,
+            "EXIT_COUNTED_BY_FEET",
+            log_message=(
+                "COUNT_EXIT "
+                f"person_id={self._format_person_uid(session.person_uid)} "
+                f"total_exited={self.total_exited_count}"
+            ),
+        )
+
+    def _clear_new_person_guard_log(
+        self,
+        yolo_track_id: int,
+    ) -> None:
+        self.new_person_guard_log_by_yolo_id.pop(yolo_track_id, None)
+
+    def _log_new_person_guard(
+        self,
+        yolo_track_id: int,
+        reason: str,
+        detail: str = "",
+    ) -> None:
+        signature = f"{reason}|{detail}"
+        if self.new_person_guard_log_by_yolo_id.get(yolo_track_id) == signature:
+            return
+
+        self.new_person_guard_log_by_yolo_id[yolo_track_id] = signature
+        suffix = f" {detail}" if detail else ""
+        self._log_event(f"{reason} yolo_id={yolo_track_id}{suffix}")
+
     def begin_frame(self, frame_index: int) -> None:
         self.current_frame_index = frame_index
         self.seen_person_uids_this_frame = set()
@@ -314,11 +601,36 @@ class PersonIdentityManager:
         identity_gate_reason: str,
         relink_score: float | None,
         relink_frame_gap: int,
+        identity_feet_reason: str = "NONE",
+        identity_inside_test: str = "UNKNOWN",
+        identity_entry_reason: IdentityEntryReasonLabel = "NONE",
+        identity_outside_proof: bool = False,
+        identity_enter_confirm_hits: int = 0,
+        identity_enter_confirm_target: int = 0,
+        relink_score_gap: float | None = None,
+        relink_best_candidate: str = "",
+        relink_second_candidate: str = "",
+        relink_state: ReLinkStateLabel = "NONE",
+        has_counted_enter: bool = False,
+        has_counted_exit: bool = False,
+        count_event_reason: CountEventReasonLabel = "NO_COUNT_EVENT",
+        merged_from_analysis_subject_id: str = "",
     ) -> IdentityUpdateResult:
+        person_uid_label = self._format_person_uid(person_uid)
+        candidate_subject_id = self._format_candidate_analysis_subject_id(yolo_track_id)
+        analysis_subject_id = person_uid_label or candidate_subject_id
+        analysis_subject_label = (
+            person_uid_label
+            if person_uid_label
+            else self._format_candidate_analysis_label(yolo_track_id)
+        )
         return IdentityUpdateResult(
             has_active_person_id=has_active_person_id,
             person_uid=person_uid,
-            person_uid_label=self._format_person_uid(person_uid),
+            person_uid_label=person_uid_label,
+            analysis_subject_id=analysis_subject_id,
+            analysis_subject_label=analysis_subject_label,
+            merged_from_analysis_subject_id=merged_from_analysis_subject_id,
             yolo_track_id=yolo_track_id,
             previous_yolo_track_id=previous_yolo_track_id,
             identity_status=identity_status,
@@ -326,9 +638,22 @@ class PersonIdentityManager:
             session_lifecycle=session_lifecycle,
             identity_debug=identity_debug,
             identity_feet_source=identity_feet_source,
+            identity_feet_reason=identity_feet_reason,
             identity_gate_reason=identity_gate_reason,
+            identity_inside_test=identity_inside_test,
+            identity_entry_reason=identity_entry_reason,
+            identity_outside_proof=identity_outside_proof,
+            identity_enter_confirm_hits=identity_enter_confirm_hits,
+            identity_enter_confirm_target=identity_enter_confirm_target,
             relink_score=relink_score,
             relink_frame_gap=relink_frame_gap,
+            relink_score_gap=relink_score_gap,
+            relink_best_candidate=relink_best_candidate,
+            relink_second_candidate=relink_second_candidate,
+            relink_state=relink_state,
+            has_counted_enter=has_counted_enter,
+            has_counted_exit=has_counted_exit,
+            count_event_reason=count_event_reason,
         )
 
     def _update_person_session_detection(
@@ -345,6 +670,7 @@ class PersonIdentityManager:
     ) -> None:
         anchor_point = self._select_anchor_point(features, bbox)
         bbox_center = self._get_bbox_center(bbox)
+        path_position = self._get_detection_path_position(features, bbox)
 
         if session.last_seen_frame != self.current_frame_index:
             session.previous_anchor_point = session.last_anchor_point
@@ -358,6 +684,7 @@ class PersonIdentityManager:
         session.last_motion_point_hip = features.get("monitor_point_hip")
         session.last_motion_point_shoulder = features.get("monitor_point_shoulder")
         session.last_anchor_point = anchor_point
+        session.last_path_position = path_position
         session.lost_frame_count = 0
         session.status = "ACTIVE"
         session.last_identity_status = identity_status
@@ -370,8 +697,12 @@ class PersonIdentityManager:
     def _create_candidate_result(
         self,
         yolo_track_id: int,
-        trusted_feet_source: str,
+        candidate: CandidateSession,
+        session_lifecycle: PersonSessionLifecycleLabel,
+        feet_source: str,
+        feet_reason: str,
         gate_reason: str,
+        inside_test: str,
     ) -> IdentityUpdateResult:
         return self._build_identity_result(
             has_active_person_id=False,
@@ -380,10 +711,20 @@ class PersonIdentityManager:
             previous_yolo_track_id=None,
             identity_status="CANDIDATE",
             session_status="CANDIDATE",
-            session_lifecycle="CANDIDATE_OUTSIDE",
+            session_lifecycle=session_lifecycle,
             identity_debug=f"YOLO {yolo_track_id}",
-            identity_feet_source=trusted_feet_source,
+            identity_feet_source=feet_source,
+            identity_feet_reason=feet_reason,
             identity_gate_reason=gate_reason,
+            identity_inside_test=inside_test,
+            identity_entry_reason="NONE",
+            identity_outside_proof=candidate.has_trusted_feet_outside,
+            identity_enter_confirm_hits=candidate.entry_confirm_hits,
+            identity_enter_confirm_target=(
+                SETTINGS.identity.entry_confirm_frames
+                if candidate.has_trusted_feet_outside
+                else 0
+            ),
             relink_score=None,
             relink_frame_gap=0,
         )
@@ -409,7 +750,8 @@ class PersonIdentityManager:
             last_motion_point_hip=features.get("monitor_point_hip"),
             last_motion_point_shoulder=features.get("monitor_point_shoulder"),
             last_anchor_point=candidate.last_anchor_point,
-            previous_anchor_point=None,
+            previous_anchor_point=candidate.previous_anchor_point,
+            last_path_position=candidate.last_path_position,
             last_direction="UNKNOWN",
             last_lane_side=None,
             last_track_zone_state="UNKNOWN",
@@ -417,43 +759,270 @@ class PersonIdentityManager:
             lifecycle_state="ACTIVE_INSIDE",
             last_identity_status="NEW",
             last_identity_debug=f"ENTER {self._format_person_uid(person_uid)}",
-            last_gate_reason="ENTERED_BY_FEET",
-            entered_counted=True,
-            exited_counted=False,
+            last_gate_reason=candidate.last_gate_reason,
+            entry_reason="CONFIRMED_ENTER",
+            has_counted_enter=False,
+            has_counted_exit=False,
+            last_count_event_reason="NO_COUNT_EVENT",
         )
         self.person_sessions[person_uid] = session
         self.yolo_to_person[candidate.current_yolo_track_id] = person_uid
-        self.entered_count += 1
+        self._count_session_enter(session)
         self._log_event(
             "PERSON_ENTERED "
             f"person_id={self._format_person_uid(person_uid)} "
             f"yolo_id={candidate.current_yolo_track_id}"
         )
+        self.pending_relink_by_yolo_id.pop(candidate.current_yolo_track_id, None)
+        self._clear_new_person_guard_log(candidate.current_yolo_track_id)
         self.candidate_sessions.pop(candidate.current_yolo_track_id, None)
         return session
+
+    def _reset_candidate_relink_state(self, candidate: CandidateSession) -> None:
+        candidate.relink_confirm_hits = 0
+        candidate.pending_relink_person_uid = None
+        candidate.pending_relink_best_score = None
+        candidate.pending_relink_second_score = None
+        candidate.pending_relink_score_gap = None
+        candidate.pending_relink_frame_gap = 0
+        candidate.pending_relink_best_label = ""
+        candidate.pending_relink_second_label = ""
+        candidate.pending_relink_state = "NONE"
+        candidate.last_relink_log_signature = ""
+        self.pending_relink_by_yolo_id.pop(candidate.current_yolo_track_id, None)
+
+    def _set_pending_relink(
+        self,
+        yolo_track_id: int,
+        target_person_uid: PersonUID | None,
+        state: ReLinkStateLabel,
+    ) -> None:
+        self.pending_relink_by_yolo_id[yolo_track_id] = PendingReLink(
+            yolo_track_id=yolo_track_id,
+            target_person_uid=target_person_uid,
+            state=state,
+        )
+
+    def _format_relink_candidate_label(
+        self,
+        candidate_score: ReLinkCandidateScore | None,
+    ) -> str:
+        if candidate_score is None:
+            return ""
+        return self._format_person_uid(candidate_score.session.person_uid)
+
+    def _upsert_candidate_session(
+        self,
+        yolo_track_id: int,
+        bbox: BBox | None,
+        features: PoseFeatures,
+        trusted_feet_point: Point | None,
+        trusted_feet_source: str,
+    ) -> CandidateSession:
+        candidate = self.candidate_sessions.get(yolo_track_id)
+        anchor_point = self._select_anchor_point(features, bbox)
+        bbox_center = self._get_bbox_center(bbox)
+        path_position = self._get_detection_path_position(features, bbox)
+
+        if candidate is None:
+            candidate = CandidateSession(
+                current_yolo_track_id=yolo_track_id,
+                first_seen_frame=self.current_frame_index,
+                last_seen_frame=self.current_frame_index,
+                last_bbox=bbox,
+                last_bbox_center=bbox_center,
+                last_anchor_point=anchor_point,
+                previous_anchor_point=None,
+                last_path_position=path_position,
+                last_trusted_feet_point=trusted_feet_point,
+                last_trusted_feet_source=trusted_feet_source,
+            )
+            self.candidate_sessions[yolo_track_id] = candidate
+            self._log_event(f"CANDIDATE_SEEN yolo_id={yolo_track_id}")
+            return candidate
+
+        if candidate.last_seen_frame != self.current_frame_index:
+            candidate.previous_anchor_point = candidate.last_anchor_point
+
+        candidate.last_seen_frame = self.current_frame_index
+        candidate.last_bbox = bbox
+        candidate.last_bbox_center = bbox_center
+        candidate.last_anchor_point = anchor_point
+        candidate.last_path_position = path_position
+        candidate.last_trusted_feet_point = trusted_feet_point
+        candidate.last_trusted_feet_source = trusted_feet_source
+        return candidate
+
+    def _get_order_conflict_reason(
+        self,
+        session: PersonSession,
+        current_path_position: float | None,
+    ) -> str | None:
+        if current_path_position is None or session.last_path_position is None:
+            return None
+
+        min_separation = max(1, SETTINGS.identity.relink_order_min_separation_px)
+        for other_session in self.person_sessions.values():
+            if other_session.person_uid == session.person_uid:
+                continue
+            if (
+                other_session.status == "COMPLETED"
+                or other_session.lifecycle_state == "EXITED"
+                or other_session.last_path_position is None
+            ):
+                continue
+
+            previous_delta = session.last_path_position - other_session.last_path_position
+            current_delta = current_path_position - other_session.last_path_position
+            if (
+                abs(previous_delta) < min_separation
+                or abs(current_delta) < min_separation
+            ):
+                continue
+            if previous_delta * current_delta < 0:
+                return self._format_person_uid(other_session.person_uid)
+        return None
+
+    def _get_same_yolo_lost_matches(
+        self,
+        yolo_track_id: int,
+    ) -> list[PersonSession]:
+        same_yolo_matches: list[PersonSession] = []
+        same_yolo_relink_window = (
+            SETTINGS.identity.max_lost_frames
+            + SETTINGS.identity.lost_inside_extra_frames
+        )
+        for session in self.person_sessions.values():
+            if session.person_uid in self.seen_person_uids_this_frame:
+                continue
+            if session.status != "LOST" or session.lifecycle_state == "EXITED":
+                continue
+            if session.previous_yolo_track_id != yolo_track_id:
+                continue
+            frame_gap = self.current_frame_index - session.last_seen_frame
+            if frame_gap <= 0 or frame_gap > same_yolo_relink_window:
+                continue
+            same_yolo_matches.append(session)
+        return same_yolo_matches
+
+    def _commit_same_yolo_relink(
+        self,
+        session: PersonSession,
+        yolo_track_id: int,
+        bbox: BBox | None,
+        features: PoseFeatures,
+        trusted_feet_point: Point | None,
+        trusted_feet_source: str,
+        trusted_inside: bool | None,
+    ) -> IdentityUpdateResult:
+        frame_gap = self.current_frame_index - session.last_seen_frame
+        self._update_person_session_detection(
+            session,
+            yolo_track_id,
+            bbox,
+            features,
+            identity_status="RELINKED",
+            relink_score=0.0,
+            relink_frame_gap=frame_gap,
+            trusted_feet_point=trusted_feet_point,
+            trusted_feet_source=trusted_feet_source,
+        )
+
+        if trusted_inside is True:
+            session.lifecycle_state = "ACTIVE_INSIDE"
+            session.last_gate_reason = "RELINKED_ACTIVE_INSIDE"
+            session.last_identity_debug = (
+                f"{self._format_person_uid(session.person_uid)} / YOLO {yolo_track_id}"
+            )
+            has_active_person_id = True
+        else:
+            session.lifecycle_state = "LOST_INSIDE"
+            session.last_gate_reason = "RELINKED_WAIT_TRUSTED_FEET"
+            session.last_identity_debug = f"RELINK {self._format_person_uid(session.person_uid)}"
+            has_active_person_id = False
+
+        session.exit_confirm_hits = 0
+        count_event_reason = self._set_session_count_event_reason(
+            session,
+            "RELINK_NO_RECOUNT",
+            log_message=(
+                "RELINK_NO_RECOUNT "
+                f"person_id={self._format_person_uid(session.person_uid)} "
+                f"old_yolo={yolo_track_id} new_yolo={yolo_track_id}"
+            ),
+        )
+        self.pending_relink_by_yolo_id.pop(yolo_track_id, None)
+        self.candidate_sessions.pop(yolo_track_id, None)
+        self._clear_new_person_guard_log(yolo_track_id)
+        self._log_event(
+            "SAME_YOLO_RELINK "
+            f"person_id={self._format_person_uid(session.person_uid)} "
+            f"yolo_id={yolo_track_id}"
+        )
+        return self._build_identity_result(
+            has_active_person_id=has_active_person_id,
+            person_uid=session.person_uid,
+            yolo_track_id=yolo_track_id,
+            previous_yolo_track_id=yolo_track_id,
+            identity_status="RELINKED",
+            session_status=session.status,
+            session_lifecycle=session.lifecycle_state,
+            identity_debug=session.last_identity_debug,
+            identity_feet_source=trusted_feet_source,
+            identity_gate_reason=session.last_gate_reason,
+            identity_entry_reason=session.entry_reason,
+            relink_score=0.0,
+            relink_frame_gap=frame_gap,
+            relink_score_gap=None,
+            relink_best_candidate=self._format_person_uid(session.person_uid),
+            relink_second_candidate="",
+            relink_state="RELINK_CONFIRMED",
+            has_counted_enter=session.has_counted_enter,
+            has_counted_exit=session.has_counted_exit,
+            count_event_reason=count_event_reason,
+            merged_from_analysis_subject_id=self._format_candidate_analysis_subject_id(
+                yolo_track_id
+            ),
+        )
 
     def score_relink_candidate(
         self,
         session: PersonSession,
         bbox: BBox | None,
         features: PoseFeatures,
-    ) -> tuple[float, str, int]:
+    ) -> ReLinkCandidateScore:
         if session.status != "LOST" or session.lifecycle_state == "EXITED":
-            return inf, "SESSION_NOT_RELINKABLE", 0
+            return ReLinkCandidateScore(
+                session=session,
+                score=inf,
+                frame_gap=0,
+                score_reason="SESSION_NOT_RELINKABLE",
+                reject_reason="SESSION_NOT_RELINKABLE",
+            )
 
         frame_gap = self.current_frame_index - session.last_seen_frame
         if frame_gap <= 0:
-            return inf, "FRAME_GAP_INVALID", frame_gap
+            return ReLinkCandidateScore(
+                session=session,
+                score=inf,
+                frame_gap=frame_gap,
+                score_reason="FRAME_GAP_INVALID",
+                reject_reason="FRAME_GAP_INVALID",
+            )
 
-        if (
-            frame_gap
-            > SETTINGS.identity.max_lost_frames + SETTINGS.identity.lost_inside_extra_frames
-        ):
-            return inf, "FRAME_GAP_TOO_LARGE", frame_gap
+        if frame_gap > SETTINGS.identity.relink_max_lost_frames:
+            return ReLinkCandidateScore(
+                session=session,
+                score=inf,
+                frame_gap=frame_gap,
+                score_reason="FRAME_GAP_TOO_LARGE",
+                reject_reason="FRAME_GAP_TOO_LARGE",
+            )
 
         current_anchor = self._select_anchor_point(features, bbox)
         predicted_anchor = self._predict_anchor_point(session, frame_gap)
         current_bbox_center = self._get_bbox_center(bbox)
+        current_path_position = self._get_detection_path_position(features, bbox)
         anchor_distance = self._distance(predicted_anchor, current_anchor)
         bbox_center_distance = self._distance(
             session.last_bbox_center,
@@ -461,18 +1030,28 @@ class PersonIdentityManager:
         )
 
         if anchor_distance is None and bbox_center_distance is None:
-            return inf, "NO_DISTANCE_REFERENCE", frame_gap
+            return ReLinkCandidateScore(
+                session=session,
+                score=inf,
+                frame_gap=frame_gap,
+                score_reason="NO_DISTANCE_REFERENCE",
+                reject_reason="NO_DISTANCE_REFERENCE",
+            )
 
         distance_reference = (
-            anchor_distance
-            if anchor_distance is not None
-            else bbox_center_distance
+            anchor_distance if anchor_distance is not None else bbox_center_distance
         )
         if (
             distance_reference is not None
             and distance_reference > SETTINGS.identity.relink_max_distance_px
         ):
-            return inf, "DISTANCE_TOO_LARGE", frame_gap
+            return ReLinkCandidateScore(
+                session=session,
+                score=inf,
+                frame_gap=frame_gap,
+                score_reason="DISTANCE_TOO_LARGE",
+                reject_reason="DISTANCE_TOO_LARGE",
+            )
 
         bbox_ratio_diff = self._get_bbox_size_ratio_diff(
             session.last_bbox,
@@ -482,10 +1061,17 @@ class PersonIdentityManager:
             bbox_ratio_diff is not None
             and bbox_ratio_diff > SETTINGS.identity.relink_max_bbox_size_ratio_diff
         ):
-            return inf, "BBOX_RATIO_TOO_LARGE", frame_gap
+            return ReLinkCandidateScore(
+                session=session,
+                score=inf,
+                frame_gap=frame_gap,
+                score_reason="BBOX_RATIO_TOO_LARGE",
+                reject_reason="BBOX_RATIO_TOO_LARGE",
+            )
 
         score = 0.0
         reason_parts: list[str] = []
+        reject_reason: str | None = None
         max_distance = max(1, SETTINGS.identity.relink_max_distance_px)
 
         if anchor_distance is not None:
@@ -500,7 +1086,7 @@ class PersonIdentityManager:
             reason_parts.append(f"center={bbox_center_distance:.1f}")
 
         score += 0.35 * (
-            frame_gap / max(1, SETTINGS.identity.max_lost_frames)
+            frame_gap / max(1, SETTINGS.identity.relink_max_lost_frames)
         )
         reason_parts.append(f"gap={frame_gap}")
 
@@ -529,9 +1115,284 @@ class PersonIdentityManager:
             score += 0.15
             reason_parts.append("lane=shift")
 
-        return score, ", ".join(reason_parts), frame_gap
+        order_conflict_person = self._get_order_conflict_reason(
+            session,
+            current_path_position,
+        )
+        if order_conflict_person:
+            reject_reason = "RELINK_REJECTED_ORDER_CONFLICT"
+            reason_parts.append(f"order={order_conflict_person}")
 
-    def _try_relink_lost_session(
+        return ReLinkCandidateScore(
+            session=session,
+            score=score,
+            frame_gap=frame_gap,
+            score_reason=", ".join(reason_parts),
+            reject_reason=reject_reason,
+        )
+
+    def _store_candidate_relink_decision(
+        self,
+        candidate: CandidateSession,
+        decision: ReLinkDecision,
+    ) -> None:
+        best_candidate = decision.best_candidate
+        second_candidate = decision.second_candidate
+        best_label = self._format_relink_candidate_label(best_candidate)
+        second_label = self._format_relink_candidate_label(second_candidate)
+
+        candidate.pending_relink_best_score = (
+            best_candidate.score if best_candidate is not None else None
+        )
+        candidate.pending_relink_second_score = (
+            second_candidate.score if second_candidate is not None else None
+        )
+        candidate.pending_relink_score_gap = decision.score_gap
+        candidate.pending_relink_frame_gap = (
+            best_candidate.frame_gap if best_candidate is not None else 0
+        )
+        candidate.pending_relink_best_label = best_label
+        candidate.pending_relink_second_label = second_label
+        candidate.pending_relink_state = decision.state
+
+        if decision.state == "RELINK_WAIT_MORE_FRAMES" and best_candidate is not None:
+            candidate.pending_relink_person_uid = best_candidate.session.person_uid
+            candidate.relink_confirm_hits = decision.confirm_hits
+            self._set_pending_relink(
+                candidate.current_yolo_track_id,
+                best_candidate.session.person_uid,
+                decision.state,
+            )
+        elif (
+            decision.state in ("RELINK_REJECTED_AMBIGUOUS", "RELINK_REJECTED_ORDER_CONFLICT")
+            and best_candidate is not None
+        ):
+            candidate.pending_relink_person_uid = best_candidate.session.person_uid
+            candidate.relink_confirm_hits = 0
+            self._set_pending_relink(
+                candidate.current_yolo_track_id,
+                best_candidate.session.person_uid,
+                decision.state,
+            )
+        else:
+            candidate.pending_relink_person_uid = None
+            candidate.relink_confirm_hits = 0
+            self.pending_relink_by_yolo_id.pop(candidate.current_yolo_track_id, None)
+
+    def _log_relink_decision(
+        self,
+        yolo_track_id: int,
+        candidate: CandidateSession,
+        decision: ReLinkDecision,
+    ) -> None:
+        best_candidate = decision.best_candidate
+        if best_candidate is None:
+            return
+
+        second_candidate = decision.second_candidate
+        best_label = self._format_relink_candidate_label(best_candidate) or "NA"
+        second_label = self._format_relink_candidate_label(second_candidate) or "NA"
+        best_score_text = self._normalize_relink_log_value(best_candidate.score)
+        second_score_text = self._normalize_relink_log_value(
+            second_candidate.score if second_candidate is not None else None
+        )
+        gap_text = self._normalize_relink_log_value(decision.score_gap)
+        signature = "|".join(
+            (
+                decision.state,
+                best_label,
+                second_label,
+                best_score_text,
+                second_score_text,
+                gap_text,
+            )
+        )
+        if candidate.last_relink_log_signature == signature:
+            return
+
+        candidate.last_relink_log_signature = signature
+        self._log_event(
+            "RELINK_CANDIDATES "
+            f"yolo_id={yolo_track_id} best={best_label} score={best_score_text} "
+            f"second={second_label} second_score={second_score_text} gap={gap_text}"
+        )
+
+        if decision.state == "RELINK_WAIT_MORE_FRAMES":
+            self._log_event(f"RELINK_WAIT_MORE_FRAMES yolo_id={yolo_track_id}")
+        elif decision.state == "RELINK_REJECTED_AMBIGUOUS":
+            self._log_event(f"RELINK_REJECTED_AMBIGUOUS yolo_id={yolo_track_id}")
+        elif decision.state == "RELINK_REJECTED_ORDER_CONFLICT":
+            self._log_event(
+                "RELINK_REJECTED_ORDER_CONFLICT "
+                f"person_id={best_label} yolo_id={yolo_track_id}"
+            )
+
+    def _evaluate_relink_decision(
+        self,
+        candidate: CandidateSession,
+        bbox: BBox | None,
+        features: PoseFeatures,
+    ) -> ReLinkDecision | None:
+        scored_candidates: list[ReLinkCandidateScore] = []
+        for session in self.person_sessions.values():
+            if session.person_uid in self.seen_person_uids_this_frame:
+                continue
+
+            candidate_score = self.score_relink_candidate(
+                session,
+                bbox,
+                features,
+            )
+            if candidate_score.score == inf and candidate_score.reject_reason is None:
+                continue
+            scored_candidates.append(candidate_score)
+
+        if not scored_candidates:
+            self._reset_candidate_relink_state(candidate)
+            return None
+
+        scored_candidates.sort(key=lambda item: item.score)
+        valid_candidates = [
+            candidate_score
+            for candidate_score in scored_candidates
+            if candidate_score.reject_reason is None and candidate_score.score != inf
+        ]
+
+        if not valid_candidates:
+            self._reset_candidate_relink_state(candidate)
+            best_candidate = scored_candidates[0]
+            second_candidate = (
+                scored_candidates[1] if len(scored_candidates) > 1 else None
+            )
+            if best_candidate.reject_reason == "RELINK_REJECTED_ORDER_CONFLICT":
+                return ReLinkDecision(
+                    state="RELINK_REJECTED_ORDER_CONFLICT",
+                    best_candidate=best_candidate,
+                    second_candidate=second_candidate,
+                    score_gap=None,
+                )
+            return None
+
+        best_candidate = valid_candidates[0]
+        second_candidate = valid_candidates[1] if len(valid_candidates) > 1 else None
+        if best_candidate.score > SETTINGS.identity.relink_score_threshold:
+            self._reset_candidate_relink_state(candidate)
+            return None
+
+        score_gap = (
+            second_candidate.score - best_candidate.score
+            if second_candidate is not None
+            else None
+        )
+        if (
+            score_gap is not None
+            and score_gap < SETTINGS.identity.relink_ambiguity_margin
+        ):
+            candidate.pending_relink_person_uid = None
+            candidate.relink_confirm_hits = 0
+            return ReLinkDecision(
+                state="RELINK_REJECTED_AMBIGUOUS",
+                best_candidate=best_candidate,
+                second_candidate=second_candidate,
+                score_gap=score_gap,
+            )
+
+        confirm_hits = (
+            candidate.relink_confirm_hits + 1
+            if candidate.pending_relink_person_uid == best_candidate.session.person_uid
+            else 1
+        )
+        if confirm_hits < SETTINGS.identity.relink_min_confirm_frames:
+            return ReLinkDecision(
+                state="RELINK_WAIT_MORE_FRAMES",
+                best_candidate=best_candidate,
+                second_candidate=second_candidate,
+                score_gap=score_gap,
+                confirm_hits=confirm_hits,
+            )
+
+        return ReLinkDecision(
+            state="RELINK_CONFIRMED",
+            best_candidate=best_candidate,
+            second_candidate=second_candidate,
+            score_gap=score_gap,
+            confirm_hits=confirm_hits,
+        )
+
+    def _build_pending_relink_result(
+        self,
+        yolo_track_id: int,
+        feet_source: str,
+        feet_reason: str,
+        inside_test: str,
+        candidate: CandidateSession,
+        decision: ReLinkDecision,
+    ) -> IdentityUpdateResult:
+        best_candidate = decision.best_candidate
+        second_candidate = decision.second_candidate
+        relink_score = best_candidate.score if best_candidate is not None else None
+        relink_frame_gap = best_candidate.frame_gap if best_candidate is not None else 0
+        best_label = self._format_relink_candidate_label(best_candidate)
+        second_label = self._format_relink_candidate_label(second_candidate)
+        is_inside_without_outside_proof = (
+            inside_test == "INSIDE_ROI" and not candidate.has_trusted_feet_outside
+        )
+
+        if decision.state == "RELINK_WAIT_MORE_FRAMES":
+            identity_status: IdentityStatusLabel = "TEMP_REID_CANDIDATE"
+            session_lifecycle: PersonSessionLifecycleLabel = "TEMP_REID_CANDIDATE"
+            identity_debug = f"TEMP YOLO {yolo_track_id}"
+            gate_reason = (
+                "BLOCKED_BY_GHOST_CANDIDATE"
+                if is_inside_without_outside_proof
+                else (
+                    "RELINK_WAIT_MORE_FRAMES "
+                    f"{decision.confirm_hits}/{SETTINGS.identity.relink_min_confirm_frames}"
+                )
+            )
+        else:
+            identity_status = "AMBIGUOUS_REID"
+            session_lifecycle = "AMBIGUOUS_REID"
+            identity_debug = f"AMBIGUOUS YOLO {yolo_track_id}"
+            gate_reason = (
+                "BLOCKED_BY_AMBIGUOUS_REID"
+                if is_inside_without_outside_proof
+                else decision.state
+            )
+
+        if is_inside_without_outside_proof:
+            candidate.last_gate_reason = gate_reason
+
+        return self._build_identity_result(
+            has_active_person_id=False,
+            person_uid=None,
+            yolo_track_id=yolo_track_id,
+            previous_yolo_track_id=None,
+            identity_status=identity_status,
+            session_status="CANDIDATE",
+            session_lifecycle=session_lifecycle,
+            identity_debug=identity_debug,
+            identity_feet_source=feet_source,
+            identity_feet_reason=feet_reason,
+            identity_gate_reason=gate_reason,
+            identity_inside_test=inside_test,
+            identity_entry_reason="NONE",
+            identity_outside_proof=candidate.has_trusted_feet_outside,
+            identity_enter_confirm_hits=candidate.entry_confirm_hits,
+            identity_enter_confirm_target=(
+                SETTINGS.identity.entry_confirm_frames
+                if candidate.has_trusted_feet_outside
+                else 0
+            ),
+            relink_score=relink_score,
+            relink_frame_gap=relink_frame_gap,
+            relink_score_gap=decision.score_gap,
+            relink_best_candidate=best_label,
+            relink_second_candidate=second_label,
+            relink_state=decision.state,
+        )
+
+    def _commit_relink_decision(
         self,
         yolo_track_id: int,
         bbox: BBox | None,
@@ -539,32 +1400,16 @@ class PersonIdentityManager:
         trusted_feet_point: Point | None,
         trusted_feet_source: str,
         trusted_inside: bool | None,
+        decision: ReLinkDecision,
     ) -> IdentityUpdateResult | None:
-        best_session: PersonSession | None = None
-        best_score = inf
-        best_reason = "NO_GHOST_MATCH"
-        best_gap = 0
-
-        for session in self.person_sessions.values():
-            if session.person_uid in self.seen_person_uids_this_frame:
-                continue
-            score, reason, frame_gap = self.score_relink_candidate(
-                session,
-                bbox,
-                features,
-            )
-            if score < best_score:
-                best_session = session
-                best_score = score
-                best_reason = reason
-                best_gap = frame_gap
-
-        if (
-            best_session is None
-            or best_score > SETTINGS.identity.relink_score_threshold
-        ):
+        best_candidate = decision.best_candidate
+        if best_candidate is None:
             return None
 
+        best_session = best_candidate.session
+        best_score = best_candidate.score
+        best_gap = best_candidate.frame_gap
+        second_label = self._format_relink_candidate_label(decision.second_candidate)
         old_yolo_track_id = best_session.previous_yolo_track_id
         self._update_person_session_detection(
             best_session,
@@ -594,13 +1439,23 @@ class PersonIdentityManager:
                 f"RELINK {self._format_person_uid(best_session.person_uid)}"
             )
             has_active_person_id = False
+        count_event_reason = self._set_session_count_event_reason(
+            best_session,
+            "RELINK_NO_RECOUNT",
+            log_message=(
+                "RELINK_NO_RECOUNT "
+                f"person_id={self._format_person_uid(best_session.person_uid)} "
+                f"old_yolo={old_yolo_track_id if old_yolo_track_id is not None else 'NA'} "
+                f"new_yolo={yolo_track_id}"
+            ),
+        )
+        self.pending_relink_by_yolo_id.pop(yolo_track_id, None)
+        self._clear_new_person_guard_log(yolo_track_id)
 
         self._log_event(
-            "PERSON_RELINKED "
+            "RELINK_CONFIRMED "
             f"person_id={self._format_person_uid(best_session.person_uid)} "
-            f"old_yolo_id={old_yolo_track_id if old_yolo_track_id is not None else 'NA'} "
-            f"new_yolo_id={yolo_track_id} gap={best_gap} score={best_score:.2f} "
-            f"reason={best_reason}"
+            f"yolo_id={yolo_track_id}"
         )
         return self._build_identity_result(
             has_active_person_id=has_active_person_id,
@@ -613,8 +1468,19 @@ class PersonIdentityManager:
             identity_debug=best_session.last_identity_debug,
             identity_feet_source=trusted_feet_source,
             identity_gate_reason=best_session.last_gate_reason,
+            identity_entry_reason=best_session.entry_reason,
             relink_score=best_score,
             relink_frame_gap=best_gap,
+            relink_score_gap=decision.score_gap,
+            relink_best_candidate=self._format_person_uid(best_session.person_uid),
+            relink_second_candidate=second_label,
+            relink_state="RELINK_CONFIRMED",
+            has_counted_enter=best_session.has_counted_enter,
+            has_counted_exit=best_session.has_counted_exit,
+            count_event_reason=count_event_reason,
+            merged_from_analysis_subject_id=self._format_candidate_analysis_subject_id(
+                yolo_track_id
+            ),
         )
 
     def _update_active_person_session(
@@ -644,6 +1510,14 @@ class PersonIdentityManager:
         previous_yolo_track_id = session.previous_yolo_track_id
 
         if trusted_inside is True:
+            count_event_reason = (
+                self._count_session_enter(session)
+                if not session.has_counted_enter
+                else self._set_session_count_event_reason(
+                    session,
+                    "ENTER_ALREADY_COUNTED",
+                )
+            )
             session.lifecycle_state = "ACTIVE_INSIDE"
             session.exit_confirm_hits = 0
             session.last_gate_reason = (
@@ -665,16 +1539,18 @@ class PersonIdentityManager:
                 identity_debug=session.last_identity_debug,
                 identity_feet_source=trusted_feet_source,
                 identity_gate_reason=session.last_gate_reason,
+                identity_entry_reason=session.entry_reason,
                 relink_score=relink_score,
                 relink_frame_gap=relink_frame_gap,
+                has_counted_enter=session.has_counted_enter,
+                has_counted_exit=session.has_counted_exit,
+                count_event_reason=count_event_reason,
             )
 
         if trusted_inside is False:
             session.exit_confirm_hits += 1
             if session.exit_confirm_hits >= SETTINGS.identity.exit_confirm_frames:
-                if not session.exited_counted:
-                    session.exited_counted = True
-                    self.exited_count += 1
+                count_event_reason = self._count_session_exit(session)
                 session.lifecycle_state = "EXITED"
                 session.status = "COMPLETED"
                 session.last_identity_status = "EXITED"
@@ -699,10 +1575,18 @@ class PersonIdentityManager:
                     identity_debug=self._format_person_uid(session.person_uid),
                     identity_feet_source=trusted_feet_source,
                     identity_gate_reason=session.last_gate_reason,
+                    identity_entry_reason=session.entry_reason,
                     relink_score=relink_score,
                     relink_frame_gap=relink_frame_gap,
+                    has_counted_enter=session.has_counted_enter,
+                    has_counted_exit=session.has_counted_exit,
+                    count_event_reason=count_event_reason,
                 )
 
+            count_event_reason = self._set_session_count_event_reason(
+                session,
+                "NO_COUNT_EVENT",
+            )
             session.lifecycle_state = "LOST_INSIDE"
             session.last_gate_reason = (
                 f"EXIT_WAIT_CONFIRM {session.exit_confirm_hits}/"
@@ -720,10 +1604,30 @@ class PersonIdentityManager:
                 identity_debug=session.last_identity_debug,
                 identity_feet_source=trusted_feet_source,
                 identity_gate_reason=session.last_gate_reason,
+                identity_entry_reason=session.entry_reason,
                 relink_score=relink_score,
                 relink_frame_gap=relink_frame_gap,
+                has_counted_enter=session.has_counted_enter,
+                has_counted_exit=session.has_counted_exit,
+                count_event_reason=count_event_reason,
             )
 
+        count_event_reason: CountEventReasonLabel
+        if self._is_bbox_center_inside_stairs(bbox) is False:
+            count_event_reason = self._set_session_count_event_reason(
+                session,
+                "BBOX_OUTSIDE_IGNORED_NO_EXIT_COUNT",
+                log_message=(
+                    "NO_EXIT_COUNT_BBOX_ONLY "
+                    f"person_id={self._format_person_uid(session.person_uid)}"
+                ),
+                log_only_on_change=True,
+            )
+        else:
+            count_event_reason = self._set_session_count_event_reason(
+                session,
+                "NO_COUNT_EVENT",
+            )
         session.exit_confirm_hits = 0
         session.lifecycle_state = "LOST_INSIDE"
         session.last_gate_reason = (
@@ -743,8 +1647,12 @@ class PersonIdentityManager:
             identity_debug=session.last_identity_debug,
             identity_feet_source=trusted_feet_source,
             identity_gate_reason=session.last_gate_reason,
+            identity_entry_reason=session.entry_reason,
             relink_score=relink_score,
             relink_frame_gap=relink_frame_gap,
+            has_counted_enter=session.has_counted_enter,
+            has_counted_exit=session.has_counted_exit,
+            count_event_reason=count_event_reason,
         )
 
     def _update_candidate_session(
@@ -755,32 +1663,158 @@ class PersonIdentityManager:
         trusted_feet_point: Point | None,
         trusted_feet_source: str,
         trusted_inside: bool | None,
+        *,
+        allow_new_person: bool,
+        blocked_new_person_reason: str | None = None,
+        blocked_target_person_uid: PersonUID | None = None,
     ) -> IdentityUpdateResult:
-        candidate = self.candidate_sessions.get(yolo_track_id)
-        if candidate is None:
-            candidate = CandidateSession(
-                current_yolo_track_id=yolo_track_id,
-                first_seen_frame=self.current_frame_index,
-                last_seen_frame=self.current_frame_index,
-                last_bbox=bbox,
-                last_bbox_center=self._get_bbox_center(bbox),
-                last_anchor_point=self._select_anchor_point(features, bbox),
-                last_trusted_feet_point=trusted_feet_point,
-                last_trusted_feet_source=trusted_feet_source,
+        candidate = self._upsert_candidate_session(
+            yolo_track_id,
+            bbox,
+            features,
+            trusted_feet_point,
+            trusted_feet_source,
+        )
+        candidate_feet_source, candidate_feet_reason = (
+            self._get_candidate_feet_context(features, trusted_feet_point)
+        )
+        self._update_candidate_proof_state(
+            candidate,
+            trusted_feet_point,
+            trusted_inside,
+        )
+        candidate_lifecycle = self._get_candidate_session_lifecycle(
+            candidate,
+            trusted_feet_point,
+            trusted_inside,
+            allow_new_person=allow_new_person,
+        )
+        inside_test = self._get_candidate_inside_test(
+            trusted_feet_point,
+            trusted_inside,
+        )
+
+        relink_decision = self._evaluate_relink_decision(
+            candidate,
+            bbox,
+            features,
+        )
+        if relink_decision is not None:
+            self._store_candidate_relink_decision(candidate, relink_decision)
+            self._log_relink_decision(
+                yolo_track_id,
+                candidate,
+                relink_decision,
             )
-            self.candidate_sessions[yolo_track_id] = candidate
-            self._log_event(f"CANDIDATE_SEEN yolo_id={yolo_track_id}")
-        else:
-            candidate.last_seen_frame = self.current_frame_index
-            candidate.last_bbox = bbox
-            candidate.last_bbox_center = self._get_bbox_center(bbox)
-            candidate.last_anchor_point = self._select_anchor_point(features, bbox)
-            candidate.last_trusted_feet_point = trusted_feet_point
-            candidate.last_trusted_feet_source = trusted_feet_source
+            if relink_decision.state == "RELINK_CONFIRMED":
+                relink_result = self._commit_relink_decision(
+                    yolo_track_id,
+                    bbox,
+                    features,
+                    trusted_feet_point,
+                    trusted_feet_source,
+                    trusted_inside,
+                    relink_decision,
+                )
+                if relink_result is not None:
+                    self.candidate_sessions.pop(yolo_track_id, None)
+                    return relink_result
+            else:
+                if blocked_new_person_reason is None:
+                    best_candidate = relink_decision.best_candidate
+                    blocked_target = (
+                        self._format_person_uid(best_candidate.session.person_uid)
+                        if best_candidate is not None
+                        else (
+                            self._format_person_uid(blocked_target_person_uid)
+                            if blocked_target_person_uid is not None
+                            else ""
+                        )
+                    )
+                    self._log_new_person_guard(
+                        yolo_track_id,
+                        "NEW_PERSON_BLOCKED_GHOST_MATCH",
+                        f"target={blocked_target or 'NA'}",
+                    )
+                return self._build_pending_relink_result(
+                    yolo_track_id,
+                    candidate_feet_source,
+                    candidate_feet_reason,
+                    inside_test,
+                    candidate,
+                    relink_decision,
+                )
 
         if trusted_inside is True:
-            candidate.entry_confirm_hits += 1
+            if not candidate.has_trusted_feet_outside:
+                if not allow_new_person:
+                    if blocked_new_person_reason is not None:
+                        blocked_target = (
+                            self._format_person_uid(blocked_target_person_uid)
+                            if blocked_target_person_uid is not None
+                            else ""
+                        )
+                        detail = (
+                            f"target={blocked_target}"
+                            if blocked_target
+                            else ""
+                        )
+                        self._log_new_person_guard(
+                            yolo_track_id,
+                            blocked_new_person_reason,
+                            detail,
+                        )
+                        candidate.last_gate_reason = self._normalize_candidate_gate_reason(
+                            blocked_new_person_reason
+                        )
+                else:
+                    candidate.last_gate_reason = "NO_OUTSIDE_PROOF"
+                return self._create_candidate_result(
+                    yolo_track_id,
+                    candidate,
+                    candidate_lifecycle,
+                    candidate_feet_source,
+                    candidate_feet_reason,
+                    candidate.last_gate_reason,
+                    inside_test,
+                )
+
+            if not allow_new_person:
+                if blocked_new_person_reason is not None:
+                    blocked_target = (
+                        self._format_person_uid(blocked_target_person_uid)
+                        if blocked_target_person_uid is not None
+                        else ""
+                    )
+                    detail = (
+                        f"target={blocked_target}"
+                        if blocked_target
+                        else ""
+                    )
+                    self._log_new_person_guard(
+                        yolo_track_id,
+                        blocked_new_person_reason,
+                        detail,
+                    )
+                    candidate.last_gate_reason = self._normalize_candidate_gate_reason(
+                        blocked_new_person_reason
+                    )
+                return self._create_candidate_result(
+                    yolo_track_id,
+                    candidate,
+                    candidate_lifecycle,
+                    candidate_feet_source,
+                    candidate_feet_reason,
+                    candidate.last_gate_reason,
+                    inside_test,
+                )
+
             if candidate.entry_confirm_hits >= SETTINGS.identity.entry_confirm_frames:
+                self._log_new_person_guard(
+                    yolo_track_id,
+                    "NEW_PERSON_ALLOWED_NO_MATCH",
+                )
+                candidate.last_gate_reason = "OUTSIDE_TO_INSIDE_CONFIRMED"
                 session = self._promote_candidate(candidate, features)
                 self.seen_person_uids_this_frame.add(session.person_uid)
                 return self._build_identity_result(
@@ -793,31 +1827,57 @@ class PersonIdentityManager:
                     session_lifecycle="ACTIVE_INSIDE",
                     identity_debug=f"{self._format_person_uid(session.person_uid)} / YOLO {yolo_track_id}",
                     identity_feet_source=trusted_feet_source,
-                    identity_gate_reason="ENTERED_BY_FEET",
+                    identity_gate_reason=session.last_gate_reason,
                     relink_score=None,
                     relink_frame_gap=0,
+                    identity_inside_test=inside_test,
+                    identity_entry_reason=session.entry_reason,
+                    identity_outside_proof=True,
+                    identity_enter_confirm_hits=SETTINGS.identity.entry_confirm_frames,
+                    identity_enter_confirm_target=SETTINGS.identity.entry_confirm_frames,
+                    has_counted_enter=session.has_counted_enter,
+                    has_counted_exit=session.has_counted_exit,
+                    count_event_reason=session.last_count_event_reason,
+                    merged_from_analysis_subject_id=self._format_candidate_analysis_subject_id(
+                        yolo_track_id
+                    ),
                 )
 
             candidate.last_gate_reason = (
-                f"WAIT_ENTRY_CONFIRM {candidate.entry_confirm_hits}/"
+                f"WAIT_ENTER_CONFIRM {candidate.entry_confirm_hits}/"
                 f"{SETTINGS.identity.entry_confirm_frames}"
             )
             return self._create_candidate_result(
                 yolo_track_id,
-                trusted_feet_source,
+                candidate,
+                candidate_lifecycle,
+                candidate_feet_source,
+                candidate_feet_reason,
                 candidate.last_gate_reason,
+                inside_test,
             )
 
-        candidate.entry_confirm_hits = 0
         candidate.last_gate_reason = (
-            "TRUSTED_FEET_OUTSIDE"
+            "TRUSTED_FEET_OUTSIDE_ROI"
             if trusted_inside is False
-            else "WAIT_TRUSTED_FEET_ENTER"
-        )
+            else (
+                "NO_FEET"
+                if trusted_feet_point is None
+                else candidate_feet_reason
+                if trusted_feet_point is None
+                else "INSIDE_TEST_UNAVAILABLE"
+            )
+            )
+        if trusted_feet_point is None and candidate_feet_reason != "NONE":
+            candidate.last_gate_reason = "NO_FEET"
         return self._create_candidate_result(
             yolo_track_id,
-            trusted_feet_source,
+            candidate,
+            candidate_lifecycle,
+            candidate_feet_source,
+            candidate_feet_reason,
             candidate.last_gate_reason,
+            inside_test,
         )
 
     def update_detection(
@@ -840,7 +1900,13 @@ class PersonIdentityManager:
             if session is None or session.status == "COMPLETED":
                 self.yolo_to_person.pop(yolo_track_id, None)
             else:
+                self._log_new_person_guard(
+                    yolo_track_id,
+                    "NEW_PERSON_BLOCKED_EXISTING_MAPPING",
+                    f"person_id={self._format_person_uid(session.person_uid)}",
+                )
                 self.candidate_sessions.pop(yolo_track_id, None)
+                self.pending_relink_by_yolo_id.pop(yolo_track_id, None)
                 return self._update_active_person_session(
                     session,
                     yolo_track_id,
@@ -852,17 +1918,55 @@ class PersonIdentityManager:
                     identity_status="ACTIVE",
                 )
 
-        relink_result = self._try_relink_lost_session(
-            yolo_track_id,
-            bbox_tuple,
-            features,
-            trusted_feet_point,
-            trusted_feet_source,
-            trusted_inside,
-        )
-        if relink_result is not None:
-            self.candidate_sessions.pop(yolo_track_id, None)
-            return relink_result
+        pending_relink = self.pending_relink_by_yolo_id.get(yolo_track_id)
+        if pending_relink is not None:
+            pending_target = self._format_person_uid(pending_relink.target_person_uid)
+            self._log_new_person_guard(
+                yolo_track_id,
+                "NEW_PERSON_BLOCKED_PENDING_RELINK",
+                f"target={pending_target or 'NA'}",
+            )
+            return self._update_candidate_session(
+                yolo_track_id,
+                bbox_tuple,
+                features,
+                trusted_feet_point,
+                trusted_feet_source,
+                trusted_inside,
+                allow_new_person=False,
+                blocked_new_person_reason="NEW_PERSON_BLOCKED_PENDING_RELINK",
+                blocked_target_person_uid=pending_relink.target_person_uid,
+            )
+
+        same_yolo_lost_matches = self._get_same_yolo_lost_matches(yolo_track_id)
+        if len(same_yolo_lost_matches) == 1:
+            return self._commit_same_yolo_relink(
+                same_yolo_lost_matches[0],
+                yolo_track_id,
+                bbox_tuple,
+                features,
+                trusted_feet_point,
+                trusted_feet_source,
+                trusted_inside,
+            )
+        if same_yolo_lost_matches:
+            blocked_target_person_uid = same_yolo_lost_matches[0].person_uid
+            self._log_new_person_guard(
+                yolo_track_id,
+                "NEW_PERSON_BLOCKED_GHOST_MATCH",
+                f"target={self._format_person_uid(blocked_target_person_uid)}",
+            )
+            return self._update_candidate_session(
+                yolo_track_id,
+                bbox_tuple,
+                features,
+                trusted_feet_point,
+                trusted_feet_source,
+                trusted_inside,
+                allow_new_person=False,
+                blocked_new_person_reason="NEW_PERSON_BLOCKED_GHOST_MATCH",
+                blocked_target_person_uid=blocked_target_person_uid,
+            )
 
         return self._update_candidate_session(
             yolo_track_id,
@@ -871,6 +1975,7 @@ class PersonIdentityManager:
             trusted_feet_point,
             trusted_feet_source,
             trusted_inside,
+            allow_new_person=True,
         )
 
     def update_from_analysis(
@@ -937,6 +2042,14 @@ class PersonIdentityManager:
                 session.lost_frame_count = (
                     self.current_frame_index - session.last_seen_frame
                 )
+                self._set_session_count_event_reason(
+                    session,
+                    "TRACK_LOST_NO_EXIT_COUNT",
+                    log_message=(
+                        "NO_EXIT_COUNT_TRACK_LOST "
+                        f"person_id={self._format_person_uid(session.person_uid)}"
+                    ),
+                )
                 self._log_event(
                     "PERSON_LOST_INSIDE "
                     f"person_id={self._format_person_uid(session.person_uid)} "
@@ -960,6 +2073,8 @@ class PersonIdentityManager:
             > SETTINGS.identity.candidate_timeout_frames
         ]
         for yolo_track_id in stale_candidate_ids:
+            self.pending_relink_by_yolo_id.pop(yolo_track_id, None)
+            self._clear_new_person_guard_log(yolo_track_id)
             del self.candidate_sessions[yolo_track_id]
 
     def get_retained_person_uids(self) -> set[PersonUID]:
@@ -969,13 +2084,43 @@ class PersonIdentityManager:
             if session.status != "COMPLETED"
         }
 
+    def get_retained_analysis_subject_ids(self) -> set[AnalysisSubjectID]:
+        retained_subject_ids: set[AnalysisSubjectID] = {
+            self._format_person_uid(person_uid)
+            for person_uid, session in self.person_sessions.items()
+            if session.status != "COMPLETED"
+        }
+        retained_subject_ids.update(
+            self._format_candidate_analysis_subject_id(yolo_track_id)
+            for yolo_track_id in self.candidate_sessions
+        )
+        return retained_subject_ids
+
+    def get_active_inside_count(self) -> int:
+        return sum(
+            1
+            for session in self.person_sessions.values()
+            if session.status == "ACTIVE"
+            and session.lifecycle_state == "ACTIVE_INSIDE"
+            and not session.has_counted_exit
+        )
+
+    def get_lost_inside_count(self) -> int:
+        return sum(
+            1
+            for session in self.person_sessions.values()
+            if session.status in ("ACTIVE", "LOST")
+            and session.lifecycle_state == "LOST_INSIDE"
+            and not session.has_counted_exit
+        )
+
     def get_active_or_lost_inside_count(self) -> int:
         return sum(
             1
             for session in self.person_sessions.values()
             if session.status in ("ACTIVE", "LOST")
             and session.lifecycle_state in ("ACTIVE_INSIDE", "LOST_INSIDE")
-            and not session.exited_counted
+            and not session.has_counted_exit
         )
 
     def augment_analysis_result(
@@ -983,22 +2128,46 @@ class PersonIdentityManager:
         analysis: AnalysisResult,
         identity_result: IdentityUpdateResult,
     ) -> None:
+        active_inside_count = self.get_active_inside_count()
+        lost_inside_count = self.get_lost_inside_count()
         identity_fields: dict[str, object] = {
             "person_uid": identity_result.person_uid,
             "person_uid_label": identity_result.person_uid_label,
+            "current_person_id": identity_result.person_uid_label,
+            "analysis_subject_id": identity_result.analysis_subject_id,
+            "analysis_subject_label": identity_result.analysis_subject_label,
+            "merged_from_analysis_subject_id": identity_result.merged_from_analysis_subject_id,
             "yolo_track_id": identity_result.yolo_track_id,
             "previous_yolo_track_id": identity_result.previous_yolo_track_id,
             "identity_status": identity_result.identity_status,
             "session_status": identity_result.session_status,
             "session_lifecycle": identity_result.session_lifecycle,
+            "person_lifecycle_state": identity_result.session_lifecycle,
             "identity_debug": identity_result.identity_debug,
             "identity_feet_source": identity_result.identity_feet_source,
+            "identity_feet_reason": identity_result.identity_feet_reason,
             "identity_gate_reason": identity_result.identity_gate_reason,
+            "identity_inside_test": identity_result.identity_inside_test,
+            "identity_entry_reason": identity_result.identity_entry_reason,
+            "identity_outside_proof": identity_result.identity_outside_proof,
+            "identity_enter_confirm_hits": identity_result.identity_enter_confirm_hits,
+            "identity_enter_confirm_target": identity_result.identity_enter_confirm_target,
             "has_active_person_id": identity_result.has_active_person_id,
             "relink_score": identity_result.relink_score,
             "relink_frame_gap": identity_result.relink_frame_gap,
-            "entered_count": self.entered_count,
-            "exited_count": self.exited_count,
+            "relink_score_gap": identity_result.relink_score_gap,
+            "relink_best_candidate": identity_result.relink_best_candidate,
+            "relink_second_candidate": identity_result.relink_second_candidate,
+            "relink_state": identity_result.relink_state,
+            "has_counted_enter": identity_result.has_counted_enter,
+            "has_counted_exit": identity_result.has_counted_exit,
+            "count_event_reason": identity_result.count_event_reason,
+            "total_entered_count": self.total_entered_count,
+            "total_exited_count": self.total_exited_count,
+            "entered_count": self.total_entered_count,
+            "exited_count": self.total_exited_count,
+            "active_inside_count": active_inside_count,
+            "lost_inside_count": lost_inside_count,
             "active_or_lost_inside_count": self.get_active_or_lost_inside_count(),
         }
         analysis.update(identity_fields)
@@ -1011,36 +2180,70 @@ class PersonIdentityManager:
         self,
         identity_result: IdentityUpdateResult,
     ) -> AnalysisResult:
-        color = (
-            SETTINGS.violation.outside_color
-            if identity_result.session_lifecycle == "CANDIDATE_OUTSIDE"
-            else (0, 165, 255)
-            if identity_result.session_lifecycle == "LOST_INSIDE"
-            else (255, 255, 0)
-            if identity_result.session_lifecycle == "EXITED"
-            else SETTINGS.violation.safe_color
-        )
+        active_inside_count = self.get_active_inside_count()
+        lost_inside_count = self.get_lost_inside_count()
+        if identity_result.session_lifecycle == "CANDIDATE_OUTSIDE":
+            color = SETTINGS.violation.outside_color
+        elif identity_result.session_lifecycle == "CANDIDATE_NO_FEET":
+            color = (0, 165, 255)
+        elif identity_result.session_lifecycle == "CANDIDATE_INSIDE_NO_OUTSIDE_PROOF":
+            color = (0, 185, 255)
+        elif identity_result.session_lifecycle == "UNASSIGNED_INSIDE_CANDIDATE":
+            color = (0, 185, 255)
+        elif identity_result.session_lifecycle == "LOST_INSIDE":
+            color = (0, 165, 255)
+        elif identity_result.session_lifecycle == "TEMP_REID_CANDIDATE":
+            color = (0, 200, 255)
+        elif identity_result.session_lifecycle == "AMBIGUOUS_REID":
+            color = (0, 140, 255)
+        elif identity_result.session_lifecycle == "EXITED":
+            color = (255, 255, 0)
+        else:
+            color = SETTINGS.violation.safe_color
         status = identity_result.session_lifecycle
+        display_status = self._format_session_lifecycle_display(status)
         result: AnalysisResult = {
             "status": status,
-            "display_status": status,
+            "display_status": display_status,
             "color": color,
             "track_id": identity_result.person_uid or -1,
             "person_uid": identity_result.person_uid,
             "person_uid_label": identity_result.person_uid_label,
+            "current_person_id": identity_result.person_uid_label,
+            "analysis_subject_id": identity_result.analysis_subject_id,
+            "analysis_subject_label": identity_result.analysis_subject_label,
+            "merged_from_analysis_subject_id": identity_result.merged_from_analysis_subject_id,
             "yolo_track_id": identity_result.yolo_track_id,
             "previous_yolo_track_id": identity_result.previous_yolo_track_id,
             "identity_status": identity_result.identity_status,
             "session_status": identity_result.session_status,
             "session_lifecycle": identity_result.session_lifecycle,
+            "person_lifecycle_state": identity_result.session_lifecycle,
             "identity_debug": identity_result.identity_debug,
             "identity_feet_source": identity_result.identity_feet_source,
+            "identity_feet_reason": identity_result.identity_feet_reason,
             "identity_gate_reason": identity_result.identity_gate_reason,
+            "identity_inside_test": identity_result.identity_inside_test,
+            "identity_entry_reason": identity_result.identity_entry_reason,
+            "identity_outside_proof": identity_result.identity_outside_proof,
+            "identity_enter_confirm_hits": identity_result.identity_enter_confirm_hits,
+            "identity_enter_confirm_target": identity_result.identity_enter_confirm_target,
             "has_active_person_id": identity_result.has_active_person_id,
             "relink_score": identity_result.relink_score,
             "relink_frame_gap": identity_result.relink_frame_gap,
-            "entered_count": self.entered_count,
-            "exited_count": self.exited_count,
+            "relink_score_gap": identity_result.relink_score_gap,
+            "relink_best_candidate": identity_result.relink_best_candidate,
+            "relink_second_candidate": identity_result.relink_second_candidate,
+            "relink_state": identity_result.relink_state,
+            "has_counted_enter": identity_result.has_counted_enter,
+            "has_counted_exit": identity_result.has_counted_exit,
+            "count_event_reason": identity_result.count_event_reason,
+            "total_entered_count": self.total_entered_count,
+            "total_exited_count": self.total_exited_count,
+            "entered_count": self.total_entered_count,
+            "exited_count": self.total_exited_count,
+            "active_inside_count": active_inside_count,
+            "lost_inside_count": lost_inside_count,
             "active_or_lost_inside_count": self.get_active_or_lost_inside_count(),
             "wrong_lane": False,
             "direction": "ANALYZING",

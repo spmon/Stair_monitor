@@ -282,13 +282,12 @@ def calc_wrist_distance(keypoints, features=None):
 
 # Suy luan carry tu pose tay/co tay/khuuyu tay.
 # Cac threshold ratio trong ham nay chi danh cho Mang Vac, khong duoc dung lai cho handrail/hold.
-def detect_carrying_pose(keypoints, holding=False, best_wrist="NONE", features=None):
+def detect_carrying_pose(keypoints, holding=False, features=None):
     """Tao bang chung carry raw cho 1 frame.
 
     Args:
         keypoints: Mang keypoint YOLO pose.
         holding: Bien cu duoc giu de giu API voi caller hien tai.
-        best_wrist: Bien cu duoc giu de giu API voi caller hien tai.
         features: Dict feature da extract neu caller co san.
 
     Returns:
@@ -299,7 +298,6 @@ def detect_carrying_pose(keypoints, holding=False, best_wrist="NONE", features=N
         history xu ly o carry_analysis. Carry khong duoc ghi de ket qua hold.
     """
     _ = holding
-    _ = best_wrist
     pose_features = _get_features(features, keypoints)
     scale_info = _compute_body_scale(pose_features)
     horizontal_scale = _horizontal_carry_scale(scale_info)
@@ -384,6 +382,16 @@ def detect_carrying_pose(keypoints, holding=False, best_wrist="NONE", features=N
     left_carry_raw = front_carry_two_hand or strong_left_front
     right_carry_raw = front_carry_two_hand or strong_right_front
     front_carry_raw = left_carry_raw or right_carry_raw
+    left_carry_score = (
+        float(SETTINGS.carry.strong_one_arm_angle_threshold - left_angle)
+        if strong_left_front and left_angle is not None
+        else None
+    )
+    right_carry_score = (
+        float(SETTINGS.carry.strong_one_arm_angle_threshold - right_angle)
+        if strong_right_front and right_angle is not None
+        else None
+    )
 
     left_carry = left_carry_raw
     right_carry = right_carry_raw
@@ -430,6 +438,8 @@ def detect_carrying_pose(keypoints, holding=False, best_wrist="NONE", features=N
         "front_carry_raw": front_carry_raw,
         "left_carry_raw": left_carry_raw,
         "right_carry_raw": right_carry_raw,
+        "left_carry_score": left_carry_score,
+        "right_carry_score": right_carry_score,
         "left_carry": left_carry,
         "right_carry": right_carry,
     }

@@ -33,19 +33,22 @@ def evaluate_inside_stairs(
     inside_feet_point = features.get("inside_feet_point")
     inside_feet_point_source = features.get(
         "inside_feet_point_source",
-        "NO_FEET_POINT",
+        "FEET_UNAVAILABLE",
+    )
+    feet_unavailable_reason = str(
+        features.get("feet_unavailable_reason", "NO_SHOULDER_NO_HIP")
     )
     left_ankle_valid = left_ankle is not None
     right_ankle_valid = right_ankle is not None
     valid_foot_count = int(left_ankle_valid) + int(right_ankle_valid)
     ankle_valid_count = int(features.get("ankle_valid_count", valid_foot_count) or 0)
     feet_reliable = bool(features.get("feet_reliable", False))
+    feet_is_real = inside_feet_point_source.startswith("REAL_")
     inside_raw_by_feet = None
-    inside_reason = "NO_FEET_POINT"
     inside_grace_left = 0
     left_foot_in = False
     right_foot_in = False
-    track_zone_state = "OUTSIDE_NO_FEET_POINT"
+    track_zone_state = "OUTSIDE_FEET_UNAVAILABLE"
     selected_feet_available = inside_feet_point is not None
 
     if left_ankle_valid:
@@ -54,14 +57,17 @@ def evaluate_inside_stairs(
         right_foot_in = is_inside_stairs(analyzer.stairs_poly, right_ankle)
 
     if not selected_feet_available:
+        last_inside_state = bool(analyzer.inside_last_state.get(track_id, False))
+        if last_inside_state:
+            track_zone_state = "INSIDE_KEEP_LAST_FEET_UNAVAILABLE"
         return {
-            "inside_stairs": False,
+            "inside_stairs": last_inside_state,
             "inside_feet_point": inside_feet_point,
             "inside_feet_point_source": inside_feet_point_source,
             "ankle_valid_count": ankle_valid_count,
             "feet_reliable": feet_reliable,
             "inside_raw_by_feet": inside_raw_by_feet,
-            "inside_reason": inside_reason,
+            "inside_reason": feet_unavailable_reason,
             "inside_grace_left": inside_grace_left,
             "left_ankle_valid": left_ankle_valid,
             "right_ankle_valid": right_ankle_valid,
@@ -72,6 +78,7 @@ def evaluate_inside_stairs(
         }
 
     inside_raw_by_feet = is_inside_stairs(analyzer.stairs_poly, inside_feet_point)
+    analyzer.inside_last_state[track_id] = inside_raw_by_feet
     if inside_raw_by_feet:
         return {
             "inside_stairs": True,
@@ -81,7 +88,7 @@ def evaluate_inside_stairs(
             "feet_reliable": feet_reliable,
             "inside_raw_by_feet": inside_raw_by_feet,
             "inside_reason": (
-                "ENTERED_BY_FOOT" if feet_reliable else "ENTERED_BY_VIRTUAL_FOOT"
+                "ENTERED_BY_FOOT" if feet_is_real else "ENTERED_BY_VIRTUAL_FOOT"
             ),
             "inside_grace_left": inside_grace_left,
             "left_ankle_valid": left_ankle_valid,
@@ -91,7 +98,7 @@ def evaluate_inside_stairs(
             "valid_foot_count": valid_foot_count,
             "track_zone_state": (
                 "INSIDE_CONFIRMED_BY_FOOT"
-                if feet_reliable
+                if feet_is_real
                 else "INSIDE_CONFIRMED_BY_VIRTUAL_FOOT"
             ),
         }
@@ -104,7 +111,7 @@ def evaluate_inside_stairs(
         "feet_reliable": feet_reliable,
         "inside_raw_by_feet": inside_raw_by_feet,
         "inside_reason": (
-            "ALL_VISIBLE_FEET_OUT" if feet_reliable else "SELECTED_FEET_OUTSIDE"
+            "ALL_VISIBLE_FEET_OUT" if feet_is_real else "SELECTED_FEET_OUTSIDE"
         ),
         "inside_grace_left": inside_grace_left,
         "left_ankle_valid": left_ankle_valid,
@@ -114,7 +121,7 @@ def evaluate_inside_stairs(
         "valid_foot_count": valid_foot_count,
         "track_zone_state": (
             "OUTSIDE_CONFIRMED_BY_FOOT"
-            if feet_reliable
+            if feet_is_real
             else "OUTSIDE_CONFIRMED_BY_SELECTED_FEET"
         ),
     }
