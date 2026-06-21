@@ -1,11 +1,17 @@
+from __future__ import annotations
+
 import math
 
+from stair_monitor.common.types import BBox, KeypointsArray, Point, PoseFeatures
 from stair_monitor.config.settings import SETTINGS
 from stair_monitor.vision.geometry import extract_pose_features
 
 
 # Tai su dung pose feature da tinh san de tranh tinh lap lai trong cung 1 frame.
-def _get_features(features, keypoints):
+def _get_features(
+    features: PoseFeatures | None,
+    keypoints: KeypointsArray | None,
+) -> PoseFeatures:
     """Lay pose feature da extract hoac tu extract moi neu can.
 
     Args:
@@ -25,7 +31,10 @@ def _get_features(features, keypoints):
 
 
 # Khoang cach co ban dung cho shoulder/torso/wrist.
-def _point_distance(point_a, point_b):
+def _point_distance(
+    point_a: Point | None,
+    point_b: Point | None,
+) -> float | None:
     """Tinh khoang cach Euclidean giua 2 diem.
 
     Args:
@@ -45,7 +54,7 @@ def _point_distance(point_a, point_b):
 
 # Tinh kich thuoc co the dong theo tung nguoi.
 # Carry uu tien threshold theo ti le co the, khong dua vao pixel cung.
-def _compute_body_scale(pose_features):
+def _compute_body_scale(pose_features: PoseFeatures) -> dict[str, float | None]:
     """Tinh scale dong cua co the de carry khong phu thuoc pixel cung.
 
     Args:
@@ -88,7 +97,7 @@ def _compute_body_scale(pose_features):
 
 
 # Chieu ngang cho carry uu tien shoulder_width de phu hop voi be rong than tren.
-def _horizontal_carry_scale(scale_info):
+def _horizontal_carry_scale(scale_info: dict[str, float | None]) -> float:
     """Lay scale ngang cho carry threshold.
 
     Args:
@@ -107,7 +116,7 @@ def _horizontal_carry_scale(scale_info):
 
 
 # Chieu doc cho carry uu tien torso_height de phu hop voi vung truoc nguc/bung.
-def _vertical_carry_scale(scale_info):
+def _vertical_carry_scale(scale_info: dict[str, float | None]) -> float:
     """Lay scale doc cho carry threshold.
 
     Args:
@@ -127,11 +136,11 @@ def _vertical_carry_scale(scale_info):
 
 # Kiem tra tay co gap goc giong tu the om/mang vat hay khong.
 def is_arm_bent_for_carrying(
-    keypoints,
-    wrist_idx,
-    angle_threshold=SETTINGS.carry.carry_arm_angle_threshold,
-    features=None,
-):
+    keypoints: KeypointsArray | None,
+    wrist_idx: int,
+    angle_threshold: float = SETTINGS.carry.carry_arm_angle_threshold,
+    features: PoseFeatures | None = None,
+) -> tuple[bool, float | None]:
     """Kiem tra 1 tay co gap theo tu the Mang Vac hay khong.
 
     Args:
@@ -155,7 +164,13 @@ def is_arm_bent_for_carrying(
 
 # Tao torso box dong de kiem tra co tay co nam trong vung truoc nguoi hay khong.
 # Cac margin ratio/pixel o day chi phuc vu logic Mang Vac, khong duoc dung sang logic vin tay.
-def get_torso_box(keypoints, margin_x=40, margin_y=40, margin_bottom=90, features=None):
+def get_torso_box(
+    keypoints: KeypointsArray | None,
+    margin_x: int = 40,
+    margin_y: int = 40,
+    margin_bottom: int = 90,
+    features: PoseFeatures | None = None,
+) -> BBox | None:
     """Tao torso box dong de kiem tra co tay dang om vat truoc nguoi.
 
     Args:
@@ -222,7 +237,12 @@ def get_torso_box(keypoints, margin_x=40, margin_y=40, margin_bottom=90, feature
 
 
 # Kiem tra co tay co nam trong vung torso hay khong de suy luan dang om vat truoc nguoi.
-def is_wrist_in_torso_area(keypoints, wrist_idx, torso_box=None, features=None):
+def is_wrist_in_torso_area(
+    keypoints: KeypointsArray | None,
+    wrist_idx: int,
+    torso_box: BBox | None = None,
+    features: PoseFeatures | None = None,
+) -> bool:
     """Kiem tra wrist co nam trong torso box hay khong.
 
     Args:
@@ -254,7 +274,10 @@ def is_wrist_in_torso_area(keypoints, wrist_idx, torso_box=None, features=None):
 
 
 # So sanh hai co tay de xem chung co du gan nhau nhu tu the om vat khong.
-def calc_wrist_distance(keypoints, features=None):
+def calc_wrist_distance(
+    keypoints: KeypointsArray | None,
+    features: PoseFeatures | None = None,
+) -> tuple[int | None, int | None, float | None]:
     """Tinh do gan nhau giua hai wrist.
 
     Args:
@@ -282,7 +305,11 @@ def calc_wrist_distance(keypoints, features=None):
 
 # Suy luan carry tu pose tay/co tay/khuuyu tay.
 # Cac threshold ratio trong ham nay chi danh cho Mang Vac, khong duoc dung lai cho handrail/hold.
-def detect_carrying_pose(keypoints, holding=False, features=None):
+def detect_carrying_pose(
+    keypoints: KeypointsArray | None,
+    holding: bool = False,
+    features: PoseFeatures | None = None,
+) -> dict[str, object]:
     """Tao bang chung carry raw cho 1 frame.
 
     Args:

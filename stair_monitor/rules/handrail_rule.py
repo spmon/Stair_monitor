@@ -1,3 +1,13 @@
+from __future__ import annotations
+
+from stair_monitor.common.types import (
+    AnalysisSubjectID,
+    KeypointsArray,
+    LinePoints,
+    Numeric,
+    Point,
+    PoseFeatures,
+)
 from stair_monitor.config.settings import SETTINGS
 from stair_monitor.vision.geometry import (
     extract_pose_features,
@@ -6,26 +16,40 @@ from stair_monitor.vision.geometry import (
     signed_distance_to_line,
 )
 
+# File nay phan tich bang chung vin tay tren ban Windows/demo.
+# FLOW: wrist keypoints + handrail line -> hit raw tung tay -> hand claim -> hold final.
+# WHY: Can tach ro `hit raw` voi `hold final` vi 1 frame de bi rung keypoint neu ket luan ngay.
+
 LEFT_HANDRAIL_RULE = "LEFT_HANDRAIL_RULE"
 RIGHT_HANDRAIL_RULE = "RIGHT_HANDRAIL_RULE"
+# WHY: Claim can hit count rieng de tranh 1 tay bi flip lien tuc giua HOLD va CARRY.
 HAND_CLAIM_HOLD_HITS = 4
 HAND_CLAIM_CARRY_HITS = 4
 HAND_CLAIM_RESET_MISSES = 10
 
+HandrailEvidence = dict[str, object]
+HoldState = dict[str, object]
+HandClaimEntry = dict[str, int | str | None]
+HandClaimState = dict[str, HandClaimEntry]
+WristDebugPayload = dict[str, object]
+
 
 # Body facing phuc vu logic di lui.
-def is_front_to_camera(body_facing):
+def is_front_to_camera(body_facing: str | None) -> bool:
     return body_facing is not None and "FRONT_TO_CAMERA" in str(body_facing)
 
 
 # Body facing phuc vu logic di lui.
-def is_back_to_camera(body_facing):
+def is_back_to_camera(body_facing: str | None) -> bool:
     return body_facing is not None and "BACK_TO_CAMERA" in str(body_facing)
 
 
 # Danh gia 1 co tay so voi 1 line lan can.
 # Vua luu signed distance de biet dung phia nao, vua luu segment distance de tranh bat nham phan keo dai vo han.
-def _evaluate_wrist_against_line(wrist_point, line):
+def _evaluate_wrist_against_line(
+    wrist_point: Point | None,
+    line: LinePoints | None,
+) -> HandrailEvidence | None:
     """Danh gia 1 wrist voi 1 line lan can.
 
     Args:
@@ -63,7 +87,12 @@ def _evaluate_wrist_against_line(wrist_point, line):
 
 # Gom bang chung cho tung cap co tay - lan can trong 1 frame.
 # Bang chung nay se duoc tai su dung cho hold logic va debug, khong sua doi ket qua nhan dien.
-def compute_handrail_evidence(features, left_line, right_line, config=None):
+def compute_handrail_evidence(
+    features: PoseFeatures | None,
+    left_line: LinePoints | None,
+    right_line: LinePoints | None,
+    config: object | None = None,
+) -> HandrailEvidence:
     """Tinh bang chung handrail frame-level cho ca 2 wrist va 2 line.
 
     Args:
@@ -103,7 +132,7 @@ def compute_handrail_evidence(features, left_line, right_line, config=None):
         ),
     }
 
-    def _pair_holds_rail(wrist_name, rail_name, rule):
+    def _pair_holds_rail(wrist_name: str, rail_name: str, rule: str) -> bool | str:
         pair = pair_results.get((wrist_name, rail_name))
         if pair is None:
             return "UNKNOWN"
@@ -168,17 +197,43 @@ def compute_handrail_evidence(features, left_line, right_line, config=None):
 }
 
 
-def evaluate_holding_status(analyzer, hold_direction, handrail_evidence):
+def evaluate_holding_status(
+    analyzer: HandrailAnalysisMixin,
+    hold_direction: str | None,
+    handrail_evidence: HandrailEvidence,
+) -> HoldState:
+    """Wrapper goi analyzer de lay hold state frame-level.
+
+    INPUT:
+        - `hold_direction`: direction dang dung cho frame hien tai.
+        - `handrail_evidence`: bang chung wrist-line da tinh san.
+
+    OUTPUT:
+        - dict hold raw cho frame hien tai.
+    """
     return analyzer._evaluate_hold_state(hold_direction, handrail_evidence)
 
 
 def evaluate_handrail(
-    analyzer,
-    track_id,
-    hold_direction,
-    keypoints,
-    features,
-):
+    analyzer: HandrailAnalysisMixin,
+    track_id: AnalysisSubjectID,
+    hold_direction: str | None,
+    keypoints: KeypointsArray | None,
+    features: PoseFeatures,
+) -> tuple[HoldState, dict[str, object], HandClaimState]:
+    """Tinh handrail final cho 1 subject trong 1 frame.
+
+    INPUT:
+        - Wrist/keypoint da extract trong `features`.
+        - 2 line lan can cua camera.
+
+    OUTPUT:
+        - `hold_state`, `carry_pose`, `hand_claim_state`.
+
+    WHY:
+        - Handrail va carry dung chung du lieu tay, nen phai tra them claim
+          state de analyzer giai xung dot giua 2 rule.
+    """
     handrail_evidence = compute_handrail_evidence(
         features,
         analyzer.left_line,
@@ -195,13 +250,18 @@ def evaluate_handrail(
 
 
 class HandrailAnalysisMixin:
-    """Mixin gom logic hold raw trai/phai va hand-claim."""
+    """Mixin gom logic hold raw trai/phai va hand-claim.
+
+    WARNING:
+        - Quy uoc nghiep vu hien tai xem vin ben phai la dung, ben trai la sai ben.
+        - Ket luan final chi duoc xuat ra sau khi bang chung da qua history/hit count.
+    """
 
     @staticmethod
     def _format_hit_confirm_debug_reason(
-        reason_code,
-        hit_count,
-        confirm_required,
+        reason_code: str,
+        hit_count: int,
+        confirm_required: int,
     ) -> str:
         return (
             f"{reason_code} "
@@ -212,19 +272,21 @@ class HandrailAnalysisMixin:
     def _build_confirmed_handrail_decision(
         cls,
         *,
-        left_wrist_valid,
-        right_wrist_valid,
-        left_hit,
-        right_hit,
-        left_hit_count,
-        right_hit_count,
-        left_confirm_required,
-        right_confirm_required,
-        left_holding,
-        right_holding,
-        left_hand_claim,
-        right_hand_claim,
-    ):
+        left_wrist_valid: bool,
+        right_wrist_valid: bool,
+        left_hit: bool,
+        right_hit: bool,
+        left_hit_count: int,
+        right_hit_count: int,
+        left_confirm_required: int,
+        right_confirm_required: int,
+        left_holding: bool,
+        right_holding: bool,
+        left_hand_claim: str,
+        right_hand_claim: str,
+    ) -> dict[str, str]:
+        # WARNING: Day la noi doi hold history thanh nhan nghiep vu cuoi cung:
+        # `OK`, `VIN_SAI_BEN`, `KHONG_VIN` hoac `WAIT_HOLD_CONFIRM`.
         if left_holding:
             return {
                 "handrail_status": "VIN_SAI_BEN",
@@ -296,11 +358,11 @@ class HandrailAnalysisMixin:
 
     @staticmethod
     def _build_wrist_debug_payload(
-        handrail_evidence,
-        wrist_name,
-        wrist_valid,
-        wrist_hit,
-    ):
+        handrail_evidence: HandrailEvidence | None,
+        wrist_name: str,
+        wrist_valid: bool,
+        wrist_hit: bool,
+    ) -> WristDebugPayload:
         pair_results = handrail_evidence.get("pairs", {}) if handrail_evidence else {}
         left_pair = pair_results.get((wrist_name, "LEFT_HANDRAIL"))
         right_pair = pair_results.get((wrist_name, "RIGHT_HANDRAIL"))
@@ -336,7 +398,10 @@ class HandrailAnalysisMixin:
         }
 
     @staticmethod
-    def _extract_wrist_debug_payload_from_hold_state(hold_state, wrist_side):
+    def _extract_wrist_debug_payload_from_hold_state(
+        hold_state: HoldState,
+        wrist_side: str,
+    ) -> WristDebugPayload:
         if wrist_side == "left":
             return {
                 "valid": bool(hold_state.get("left_wrist_valid", False)),
@@ -369,13 +434,13 @@ class HandrailAnalysisMixin:
 
     def _build_left_right_hold_state(
         self,
-        left_wrist_valid,
-        right_wrist_valid,
-        left_holding,
-        right_holding,
-        left_debug_payload=None,
-        right_debug_payload=None,
-    ):
+        left_wrist_valid: bool,
+        right_wrist_valid: bool,
+        left_holding: bool,
+        right_holding: bool,
+        left_debug_payload: WristDebugPayload | None = None,
+        right_debug_payload: WristDebugPayload | None = None,
+    ) -> HoldState:
         if left_debug_payload is None:
             left_debug_payload = {}
         if right_debug_payload is None:
@@ -455,7 +520,7 @@ class HandrailAnalysisMixin:
 
         return hold_info
 
-    def _evaluate_hold_state(self, *args):
+    def _evaluate_hold_state(self, *args: object) -> HoldState:
         """Danh gia hold raw theo direction neu co, hoac theo any-rail neu chua co.
 
         Args:
@@ -514,7 +579,11 @@ class HandrailAnalysisMixin:
 
     # Claim CARRY loai bo tay do khoi hold de tranh 1 tay vua "vin" vua "mang vac".
     # Hold la logic doc lap, carry chi duoc anh huong qua lop claim nay.
-    def _apply_hand_claim_to_hold_state(self, hold_state, hand_claim_state):
+    def _apply_hand_claim_to_hold_state(
+        self,
+        hold_state: HoldState,
+        hand_claim_state: HandClaimState | None,
+    ) -> HoldState:
         """Loai candidate hold o tay da duoc claim CARRY.
 
         Args:
@@ -571,7 +640,7 @@ class HandrailAnalysisMixin:
         return claimed_hold_state
 
     @staticmethod
-    def _new_hand_claim_entry():
+    def _new_hand_claim_entry() -> HandClaimEntry:
         return {
             "claim": None,
             "hold_hits": 0,
@@ -579,7 +648,7 @@ class HandrailAnalysisMixin:
             "misses": 0,
         }
 
-    def _get_hand_claim_state(self, track_id):
+    def _get_hand_claim_state(self, track_id: AnalysisSubjectID) -> HandClaimState:
         if track_id not in self.hand_claim_state:
             self.hand_claim_state[track_id] = {
                 "left": self._new_hand_claim_entry(),
@@ -589,14 +658,16 @@ class HandrailAnalysisMixin:
 
     def _update_hand_claim_state(
         self,
-        track_id,
-        left_hold_raw,
-        right_hold_raw,
-        left_carry_raw,
-        right_carry_raw,
-        left_handrail_active=False,
-        right_handrail_active=False,
-    ):
+        track_id: AnalysisSubjectID,
+        left_hold_raw: bool,
+        right_hold_raw: bool,
+        left_carry_raw: bool,
+        right_carry_raw: bool,
+        left_handrail_active: bool = False,
+        right_handrail_active: bool = False,
+    ) -> HandClaimState:
+        # WHY: Mot tay khong nen vua duoc tinh la HOLD vua duoc tinh la CARRY trong cung mot giai doan.
+        # Claim state la lop trung gian de khoa vai tro cua tung tay sau khi bang chung da du hit.
         claim_state = self._get_hand_claim_state(track_id)
         hand_raw_inputs = {
             "left": (left_hold_raw, left_carry_raw, left_handrail_active),
@@ -650,13 +721,26 @@ class HandrailAnalysisMixin:
 
     def _resolve_hold_and_claim_state(
         self,
-        track_id,
-        hold_direction,
-        handrail_evidence,
-        keypoints,
-        holding_raw,
-        features,
-    ):
+        track_id: AnalysisSubjectID,
+        hold_direction: str | None,
+        handrail_evidence: HandrailEvidence,
+        keypoints: KeypointsArray | None,
+        holding_raw: bool,
+        features: PoseFeatures | None,
+    ) -> tuple[HoldState, dict[str, object], HandClaimState]:
+        """Ghep handrail raw voi carry raw de ra trang thai tay cuoi cung.
+
+        FLOW:
+            1. Tinh hold raw tu wrist/rail.
+            2. Tinh carry raw tu pose tay/than.
+            3. Cap nhat claim HOLD/CARRY cho tung tay.
+            4. Ap claim nguoc lai vao hold va carry de tranh xung dot.
+
+        OUTPUT:
+            - hold_state sau claim
+            - carry_pose sau claim
+            - hand_claim_state
+        """
         hold_state_before_claim = self._evaluate_hold_state(
             hold_direction,
             handrail_evidence,
@@ -687,7 +771,7 @@ class HandrailAnalysisMixin:
         return hold_state, carry_pose, hand_claim_state
 
     @staticmethod
-    def _copy_hold_state_fields(hold_state):
+    def _copy_hold_state_fields(hold_state: HoldState) -> tuple[object, ...]:
         return (
             hold_state["holding_raw"],
             hold_state["hold_raw_status"],

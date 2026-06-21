@@ -4,6 +4,7 @@ import os
 
 import cv2
 
+from stair_monitor.common.types import FrameArray
 from stair_monitor.config.settings import SETTINGS
 
 
@@ -20,8 +21,8 @@ def ensure_debug_snapshot_dirs() -> tuple[str | None, str | None]:
 
 def save_debug_snapshots(
     frame_index: int,
-    model_input_frame,
-    overlay_frame,
+    model_input_frame: FrameArray,
+    overlay_frame: FrameArray,
     model_input_dir: str | None,
     overlay_dir: str | None,
 ) -> None:

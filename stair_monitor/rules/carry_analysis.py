@@ -1,12 +1,32 @@
+from __future__ import annotations
+
+from stair_monitor.common.types import AnalysisSubjectID, KeypointsArray, Numeric, PoseFeatures
 from stair_monitor.config.settings import SETTINGS
 from stair_monitor.rules.carry_rule import detect_carrying_pose
 
+CarryInfo = dict[str, object]
+HandClaimEntry = dict[str, int | str | None]
+HandClaimState = dict[str, HandClaimEntry]
+HandrailState = dict[str, object]
+
+# File nay tong hop logic Mang Vac cho ban Windows/demo.
+# FLOW: carry raw tu pose -> gate/claim voi handrail -> history nhieu frame -> warning final `Mang Vac`.
+# WHY: Carry can bo loc nhieu frame vi pose tay rung rat de nham trong tung frame le.
 
 class CarryAnalysisMixin:
-    """Mixin gom logic history va hand-claim cho Mang Vac."""
+    """Mixin gom logic history va hand-claim cho Mang Vac.
+
+    WARNING:
+        - Carry chi duoc sinh warning `Mang Vac`.
+        - Carry khong duoc phep ghi de len handrail final; no chi giao tiep voi
+          handrail qua gate/claim de tranh xung dot du lieu tay.
+    """
 
     @staticmethod
-    def _build_carry_handrail_state(handrail_state):
+    def _build_carry_handrail_state(
+        handrail_state: HandrailState | None,
+    ) -> dict[str, bool]:
+        """Rut gon handrail state thanh gate duoc/khong duoc tinh carry tren moi tay."""
         handrail_state = handrail_state or {}
         left_hit = bool(
             handrail_state.get(
@@ -39,12 +59,13 @@ class CarryAnalysisMixin:
 
     @staticmethod
     def _resolve_one_hand_carry_side(
-        left_carry_evidence,
-        right_carry_evidence,
-        left_carry_score,
-        right_carry_score,
-        front_carry_two_hand=False,
-    ):
+        left_carry_evidence: bool,
+        right_carry_evidence: bool,
+        left_carry_score: Numeric | None,
+        right_carry_score: Numeric | None,
+        front_carry_two_hand: bool = False,
+    ) -> str:
+        """Chon ben dai dien neu carry 1 tay co bang chung o ca hai phia."""
         if front_carry_two_hand:
             return "NONE"
         if left_carry_evidence and not right_carry_evidence:
@@ -68,13 +89,14 @@ class CarryAnalysisMixin:
     @staticmethod
     def _derive_carry_reason(
         *,
-        left_carry_allowed,
-        right_carry_allowed,
-        front_carry_active,
-        front_carry_confirmed,
-        front_carry_two_hand,
-        one_hand_carry_side,
-    ):
+        left_carry_allowed: bool,
+        right_carry_allowed: bool,
+        front_carry_active: bool,
+        front_carry_confirmed: bool,
+        front_carry_two_hand: bool,
+        one_hand_carry_side: str,
+    ) -> str:
+        """Sinh reason debug de giai thich carry dang o raw, confirmed hay dang bi suppress."""
         if not left_carry_allowed and not right_carry_allowed:
             return "CARRY_SUPPRESSED_BY_HANDRAIL_HOLD"
         if front_carry_active and front_carry_two_hand:
@@ -107,11 +129,11 @@ class CarryAnalysisMixin:
     # Muc dich la giu rieng "bang chung carry" voi "bang chung hold" de debug cho ro.
     def _get_carry_pose(
         self,
-        keypoints,
-        holding_raw,
-        features=None,
-        handrail_state=None,
-    ):
+        keypoints: KeypointsArray | None,
+        holding_raw: bool,
+        features: PoseFeatures | None = None,
+        handrail_state: HandrailState | None = None,
+    ) -> CarryInfo:
         """Lay carry raw frame-level truoc khi hand claim duoc ap dung.
 
         Args:
@@ -132,6 +154,8 @@ class CarryAnalysisMixin:
             holding=holding_raw,
             features=features,
         )
+        # FLOW: Handrail gate chan som nhung tay da qua gan/dang vin rail,
+        # tranh de raw carry "an" nham vao tay dang duoc dung cho vin.
         handrail_gate = self._build_carry_handrail_state(handrail_state)
         left_carry_allowed = handrail_gate["left_carry_allowed"]
         right_carry_allowed = handrail_gate["right_carry_allowed"]
@@ -212,7 +236,11 @@ class CarryAnalysisMixin:
 
     # Neu mot tay da duoc claim cho HOLD thi chan tay do khoi logic carry.
     # Khong duoc de carry ghi de len ket qua hold; hold va carry la 2 logic doc lap.
-    def _apply_hand_claim_to_carry_pose(self, carry_info, hand_claim_state):
+    def _apply_hand_claim_to_carry_pose(
+        self,
+        carry_info: CarryInfo,
+        hand_claim_state: HandClaimState | None,
+    ) -> CarryInfo:
         """Ap hand claim de loai tay da duoc xac nhan HOLD khoi carry raw.
 
         Args:
@@ -319,13 +347,13 @@ class CarryAnalysisMixin:
     # Raw la ket qua tung frame, confirmed la ket qua sau khi du hit qua nhieu frame.
     def _analyze_carry(
         self,
-        track_id,
-        keypoints,
-        holding_raw,
-        features=None,
-        carry_pose=None,
-        handrail_state=None,
-    ):
+        track_id: AnalysisSubjectID,
+        keypoints: KeypointsArray | None,
+        holding_raw: bool,
+        features: PoseFeatures | None = None,
+        carry_pose: CarryInfo | None = None,
+        handrail_state: HandrailState | None = None,
+    ) -> CarryInfo:
         """Phan tich Mang Vac sau khi da co carry raw va claim state.
 
         Args:
@@ -343,6 +371,8 @@ class CarryAnalysisMixin:
             front_carry_raw la ket qua tung frame. front_carry_confirmed la ket
             qua sau history theo track_id de chong nhieu YOLO/keypoint.
         """
+        # INPUT: `carry_pose` co the da duoc handrail branch tinh san trong cung frame.
+        # WHY: Tai su dung no giup carry va handrail doc chung mot bo bang chung, tranh lech debug.
         carry_info = (
             dict(carry_pose)
             if carry_pose is not None
@@ -391,6 +421,7 @@ class CarryAnalysisMixin:
         left_carry_score = left_carry_score if left_carry_evidence else None
         right_carry_score = right_carry_score if right_carry_evidence else None
 
+        # WHY: History 2 tay va 1 tay duoc luu rieng vi 2 pattern nay co nguong xac nhan khac nhau.
         # Lich su 2 tay va 1 tay duoc luu rieng de giu nguyen logic nguong hien tai.
         if track_id not in self.front_carry_history:
             self.front_carry_history[track_id] = []
@@ -482,14 +513,19 @@ class CarryAnalysisMixin:
 
 
 def evaluate_carry(
-    analyzer,
-    track_id,
-    keypoints,
-    holding_raw,
-    features=None,
-    carry_pose=None,
-    handrail_state=None,
-):
+    analyzer: CarryAnalysisMixin,
+    track_id: AnalysisSubjectID,
+    keypoints: KeypointsArray | None,
+    holding_raw: bool,
+    features: PoseFeatures | None = None,
+    carry_pose: CarryInfo | None = None,
+    handrail_state: HandrailState | None = None,
+) -> CarryInfo:
+    """Wrapper public de analyzer goi carry analysis.
+
+    OUTPUT:
+        - dict carry final sau khi da qua history va gate voi handrail.
+    """
     return analyzer._analyze_carry(
         track_id,
         keypoints,

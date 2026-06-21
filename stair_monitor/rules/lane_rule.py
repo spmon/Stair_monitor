@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from stair_monitor.common.types import PoseFeatures
+from stair_monitor.common.types import LinePoints, Numeric, Point, PoseFeatures
 from stair_monitor.config.settings import SETTINGS
 
 if TYPE_CHECKING:
     from stair_monitor.core.analyzer import BehaviorAnalyzer
 
 
-def compute_lane_side(point, line_points):
+def compute_lane_side(
+    point: Point | None,
+    line_points: LinePoints | None,
+) -> Numeric | None:
     if point is None or line_points is None or len(line_points) < 2:
         return None
 
@@ -19,19 +22,23 @@ def compute_lane_side(point, line_points):
     )
 
 
-def is_left_lane_side(side_value) -> bool:
+def is_left_lane_side(side_value: Numeric | None) -> bool:
     if side_value is None or side_value == 0:
         return False
     return side_value * SETTINGS.camera.lane_left_side_sign > 0
 
 
-def is_right_lane_side(side_value) -> bool:
+def is_right_lane_side(side_value: Numeric | None) -> bool:
     if side_value is None or side_value == 0:
         return False
     return side_value * SETTINGS.camera.lane_left_side_sign < 0
 
 
-def is_wrong_lane_side(direction, side_value, sign_normal):
+def is_wrong_lane_side(
+    direction: str,
+    side_value: Numeric | None,
+    sign_normal: bool,
+) -> bool | None:
     if side_value is None or direction not in ("UP", "DOWN"):
         return None
 
@@ -49,7 +56,7 @@ def is_wrong_lane_side(direction, side_value, sign_normal):
     )
 
 
-def get_lane_side_label(side_value) -> str:
+def get_lane_side_label(side_value: Numeric | None) -> str:
     if side_value is None:
         return "UNKNOWN"
     if is_left_lane_side(side_value):
@@ -59,7 +66,7 @@ def get_lane_side_label(side_value) -> str:
     return "ON_LINE"
 
 
-def get_correct_lane_side(direction, sign_normal) -> str:
+def get_correct_lane_side(direction: str, sign_normal: bool) -> str:
     if direction not in ("UP", "DOWN"):
         return "UNKNOWN"
 
@@ -79,7 +86,7 @@ def get_camera_angle_profile() -> str:
     )
 
 
-def select_p_lane_for_lane(features: PoseFeatures):
+def select_p_lane_for_lane(features: PoseFeatures) -> tuple[Point | None, str, str]:
     feet_point = features.get("feet_point")
     feet_point_source = features.get("feet_point_source", "FEET_UNAVAILABLE")
 
@@ -97,8 +104,8 @@ def select_p_lane_for_lane(features: PoseFeatures):
 def update_lane_history(
     analyzer: BehaviorAnalyzer,
     track_id: int,
-    wrong_lane_raw,
-):
+    wrong_lane_raw: bool | None,
+) -> tuple[int, bool]:
     return analyzer._update_lane_history(track_id, wrong_lane_raw)
 
 

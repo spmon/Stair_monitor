@@ -4,13 +4,13 @@ from typing import TYPE_CHECKING
 
 import cv2
 
-from stair_monitor.common.types import Point, PoseFeatures
+from stair_monitor.common.types import LinePoints, Point, PoseFeatures
 
 if TYPE_CHECKING:
     from stair_monitor.core.analyzer import BehaviorAnalyzer
 
 
-def is_inside_stairs(stairs_poly, p_lane: Point | None) -> bool:
+def is_inside_stairs(stairs_poly: LinePoints, p_lane: Point | None) -> bool:
     if p_lane is None or len(stairs_poly) < 3:
         return False
 

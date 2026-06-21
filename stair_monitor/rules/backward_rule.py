@@ -8,6 +8,9 @@ from stair_monitor.rules.handrail_rule import is_back_to_camera, is_front_to_cam
 if TYPE_CHECKING:
     from stair_monitor.core.analyzer import BehaviorAnalyzer
 
+# File nay xac nhan `Di Lui` tu direction va body facing.
+# WHY: Chi nhin motion la khong du; cung chieu di do nhung huong than nguoi khac nhau se cho nghiep vu khac nhau.
+
 
 def is_backward_by_direction_and_facing(direction: str, body_facing: str) -> bool:
     if SETTINGS.camera.use_current_camera_angle:
@@ -33,6 +36,7 @@ def evaluate_backward(
     ear_pair_valid: bool,
     head_valid: bool,
 ) -> dict[str, object]:
+    """Danh gia backward raw va backward confirmed cho 1 frame."""
     backward_history_value = False
     body_facing_reliable = (
         body_facing in ("FRONT_TO_CAMERA", "BACK_TO_CAMERA")
@@ -45,6 +49,7 @@ def evaluate_backward(
         and (ear_pair_valid or head_valid)
     )
 
+    # WHY: Khi upper body bi che hoac body facing chua du evidence, history backward khong nen hoc tu du lieu mo ho.
     if not body_facing_reliable:
         backward_raw = False
         backward_history_value = None

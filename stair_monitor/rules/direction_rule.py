@@ -8,6 +8,9 @@ from stair_monitor.config.settings import SETTINGS
 if TYPE_CHECKING:
     from stair_monitor.core.analyzer import BehaviorAnalyzer
 
+# File nay suy ra huong di tu lich su monitor point.
+# FLOW: monitor_point_hip / monitor_point_shoulder -> history theo nhieu frame -> final_direction.
+# WHY: Direction khong nen ket luan tren 1 frame vi bbox/keypoint co the rung.
 
 def _ensure_motion_history(
     history_map: dict[int, list[int]],
@@ -35,6 +38,11 @@ def apply_direction_history(
     track_id: int,
     features: PoseFeatures,
 ) -> None:
+    """Cap nhat lich su motion cho 2 luong hip va shoulder.
+
+    WHY:
+        - Giu 2 history rieng giup direction on dinh hon so voi chi nhin 1 diem.
+    """
     _append_monitor_point_history(
         analyzer.hip_motion_history,
         track_id,
@@ -112,6 +120,15 @@ def update_direction(
     track_id: int,
     features: PoseFeatures,
 ) -> dict[str, object]:
+    """Tong hop direction tu 2 history hip/shoulder.
+
+    OUTPUT:
+        - `direction`, `final_direction`, `direction_source`, `direction_reason`.
+
+    WHY:
+        - Neu 2 luong mau thuan, runtime uu tien giu `last_valid_direction`
+          thay vi flip lien tuc tung frame.
+    """
     hip_direction_info = compute_direction_from_point_history(
         analyzer.hip_motion_history.get(track_id, []),
         "HIP",

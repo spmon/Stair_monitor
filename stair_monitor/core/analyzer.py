@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from typing import cast
 
 import numpy as np
@@ -9,6 +10,9 @@ from stair_monitor.common.types import (
     AnalysisSubjectID,
     AnalysisResult,
     BBoxArray,
+    CameraConfigDict,
+    ColorBGR,
+    PerfStats,
     KeypointsArray,
     Point,
     PoseFeatures,
@@ -42,6 +46,9 @@ from stair_monitor.vision.step_lines import (
     normalize_step_lines,
 )
 
+# File nay la trung tam phan tich hanh vi cua ban Windows/demo.
+# FLOW: features cua 1 nguoi -> inside/direction/lane/handrail/carry/backward/standing -> warnings/result dict.
+# WHY: Tach analyzer ra khoi `test-cauthang.py` de file entry point chi con viec dieu phoi frame/model/render.
 
 class BehaviorAnalyzer(
     BehaviorHistoryMixin,
@@ -49,9 +56,23 @@ class BehaviorAnalyzer(
     HandrailAnalysisMixin,
     ResultBuilderMixin,
 ):
-    """Trung tam dieu phoi cac rule cho stair_monitor Windows/demo."""
+    """Trung tam dieu phoi cac rule cho stair_monitor Windows/demo.
 
-    def __init__(self, config):
+    INPUT:
+        - Camera config da duoc load tu JSON.
+        - Du lieu tung nguoi da qua `extract_pose_features()`.
+
+    OUTPUT:
+        - `AnalysisResult` chua status, warnings, color va cac field debug.
+
+    WHY:
+        - Moi rule can history rieng theo subject, nhung renderer va main loop
+          lai can mot result dict cuoi cung de de ve/log.
+    """
+
+    def __init__(self, config: CameraConfigDict | dict[str, object]) -> None:
+        # INPUT: `config` chua ROI cau thang, center line, handrail line va step lines.
+        # WHY: Analyzer cache san cac hinh hoc nay de moi frame khong phai parse lai JSON.
         self.center_line = config.get("CENTER_LINE", [[0, 0], [0, 0]])
 
         self.left_line = np.array(
@@ -66,19 +87,19 @@ class BehaviorAnalyzer(
         step_bottom = config.get("STEP_BOTTOM", [[0, 0], [0, 0]])
         step_top = config.get("STEP_TOP", [[0, 0], [0, 0]])
         bottom_left = [
-            step_bottom[0][0]-30,
+            step_bottom[0][0],
             step_bottom[0][1],
         ]
         bottom_right = [
-            step_bottom[1][0]+30,
+            step_bottom[1][0],
             step_bottom[1][1],
         ]
         top_right = [
-            step_top[1][0]+30,
+            step_top[1][0],
             step_top[1][1],
         ]
         top_left = [
-            step_top[0][0]-30,
+            step_top[0][0],
             step_top[0][1],
         ]
         self.stairs_poly = np.array(
@@ -118,11 +139,15 @@ class BehaviorAnalyzer(
     def frame_index(self, value: int) -> None:
         self.state.frame_index = value
 
-    def begin_frame(self):
+    def begin_frame(self) -> None:
         self.frame_index += 1
 
     @staticmethod
-    def _record_perf(perf, key, start_time):
+    def _record_perf(
+        perf: PerfStats | None,
+        key: str,
+        start_time: float | None,
+    ) -> None:
         if perf is None or start_time is None:
             return
         perf[key] = perf.get(key, 0.0) + (time.perf_counter() - start_time) * 1000.0
@@ -899,17 +924,36 @@ class BehaviorAnalyzer(
         box: BBoxArray | None = None,
         features: PoseFeatures | None = None,
     ) -> AnalysisResult:
+        """Phan tich hanh vi cua 1 subject trong 1 frame.
+
+        INPUT:
+            - `track_id`: ID ma analyzer dung de giu history cua subject hien tai.
+            - `p_lane`: Diem uu tien cho inside/lane.
+            - `p_motion`: Diem uu tien cho direction/backward/standing.
+            - `keypoints`, `box`, `features`: Dau vao pose cua subject.
+
+        OUTPUT:
+            - `AnalysisResult` co status, warnings, color va cac field debug.
+
+        WHY:
+            - Ham nay la noi gom ket qua tu nhieu rule doc lap, nhung van phai
+              giu behavior on dinh qua nhieu frame.
+        """
         perf = {} if SETTINGS.performance.enable_perf_log else None
         analyze_start = time.perf_counter() if perf is not None else None
         if self.frame_index < 0:
             self.frame_index = 0
 
+        # FLOW: Neu caller chua truyen `features` thi analyzer tu extract lai.
+        # WHY: Giu API mem deo, nhung van uu tien tai su dung features da co san de tranh tinh lap.
         features = cast(
             PoseFeatures,
             features or extract_pose_features(keypoints, box),
         )
+        # INPUT: `p_lane` tach rieng de inside/lane uu tien vi tri chan.
         if p_lane is None:
             p_lane = features.get("feet_point")
+        # INPUT: `p_motion` tach rieng de direction/backward/standing uu tien moc motion on dinh.
         if p_motion is None:
             p_motion = features.get("motion_point")
 
@@ -944,6 +988,8 @@ class BehaviorAnalyzer(
         head_valid = bool(features.get("head_valid", False))
         arm_side_order = features.get("arm_side_order", "UNKNOWN")
 
+        # DEBUG: `analysis_context` la bo nho tam giu moi field ma result_builder va renderer can doc.
+        # WHY: Gom field vao 1 dict chung giup build result cuoi cung on dinh, khong phai truyen tay tung bien.
         analysis_context: dict[str, object] = {
             "track_id": track_id,
             "p_lane": person.p_lane,
@@ -1087,11 +1133,12 @@ class BehaviorAnalyzer(
 
         def build_result(
             status: str,
-            color,
+            color: ColorBGR,
             display_status: str = "",
-            carry_info_override=None,
-            **overrides,
+            carry_info_override: dict[str, object] | None = None,
+            **overrides: object,
         ) -> AnalysisResult:
+            # OUTPUT: Moi duong return cuoi cung deu di qua helper nay de format result dict thong nhat.
             self._record_perf(perf, "analyze", analyze_start)
             return self._build_result_from_context(
                 analysis_context,
@@ -1103,7 +1150,13 @@ class BehaviorAnalyzer(
                 **overrides,
             )
 
-        def update_hold_context(hold_direction, skip_handrail=False):
+        def update_hold_context(
+            hold_direction: str | None,
+            skip_handrail: bool = False,
+        ) -> dict[str, object]:
+            # FLOW: Handrail duoc xu ly qua 2 tang:
+            # 1. lay bang chung wrist/rail raw
+            # 2. qua history + hand-claim de ra hold final on dinh hon.
             hold_start = time.perf_counter() if perf is not None else None
             hold_state, carry_pose, hand_claim_state = evaluate_handrail(
                 self,
@@ -1297,8 +1350,12 @@ class BehaviorAnalyzer(
             )
             return carry_pose
 
+        # FLOW: Bat dau pipeline phan tich cho frame hien tai.
+        # WHY: Direction can lich su nhieu frame, nen phai append history som truoc khi rule direction chay.
         apply_direction_history(self, track_id, person.features)
 
+        # FLOW: Kiem tra vi tri trong ROI va dung yen truoc.
+        # WHY: Standing chi co y nghia khi nguoi dang o trong vung cau thang.
         standing_start = time.perf_counter() if perf is not None else None
         analysis_context.update(
             evaluate_inside_stairs(
@@ -1316,9 +1373,15 @@ class BehaviorAnalyzer(
                 bool(analysis_context["inside_stairs"]),
             )
         )
+
+        # FLOW: Tinh direction sau khi da co lich su motion moi nhat.
+        # WHY: Lane, backward, handrail direction-aware va two-step deu phu thuoc direction.
         direction_start = time.perf_counter() if perf is not None else None
         analysis_context.update(update_direction(self, track_id, person.features))
         self._record_perf(perf, "direction", direction_start)
+
+        # FLOW: Two-step skip duoc tinh song song voi direction/inside.
+        # WHY: Rule nay can ankle + step band + direction filter de tranh ket luan sai.
         analysis_context.update(
             self._evaluate_two_step_skip(
                 track_id,
@@ -1330,8 +1393,11 @@ class BehaviorAnalyzer(
         )
         self._record_perf(perf, "standing", standing_start)
 
+        # WHY: Direction can du frame history moi xac nhan.
+        # Khi chua du history, analyzer chi duoc tra ket qua tam va tranh sinh warning manh mot cach som.
         if analysis_context["direction"] == "ANALYZING":
             if not analysis_context["inside_stairs"]:
+                # WHY: Nguoi da ngoai ROI ma direction van chua ro thi reset history som de tranh giu rac frame cu.
                 self._reset_behavior_histories(track_id)
                 analysis_context["hold_raw_status"] = "OUTSIDE"
                 analysis_context["hold_final_status"] = "OUTSIDE"
@@ -1342,6 +1408,7 @@ class BehaviorAnalyzer(
                 )
 
             hold_direction = self.last_valid_direction.get(track_id)
+            # WHY: Du direction chua confirm, handrail/standing/two-step van co the can hien debug tam thoi.
             update_hold_context(hold_direction)
             warnings = self._collect_warnings(
                 False,
@@ -1379,6 +1446,7 @@ class BehaviorAnalyzer(
                 ),
             )
 
+        # WHY: Ra khoi ROI phai reset history hanh vi de warning cu khong "di theo" subject khi quay lai.
         if not analysis_context["inside_stairs"]:
             self._reset_behavior_histories(track_id)
             analysis_context["warnings"] = []
@@ -1424,10 +1492,12 @@ class BehaviorAnalyzer(
                 handrail_debug_reason="OUTSIDE_STAIRS",
             )
 
+        # FLOW: Khi da co direction hop le thi ghi nho last valid direction cho cac frame mo ho sau do.
         if analysis_context["direction"] in ("UP", "DOWN"):
             self.last_valid_direction[track_id] = analysis_context["direction"]
             self.last_valid_direction_frame[track_id] = self.frame_index
 
+        # FLOW: Backward dung direction + body_facing, khong dung lane/handrail.
         backward_start = time.perf_counter() if perf is not None else None
         analysis_context.update(
             evaluate_backward(
@@ -1445,6 +1515,7 @@ class BehaviorAnalyzer(
         )
         self._record_perf(perf, "backward", backward_start)
 
+        # FLOW: Lane dung center line + direction + feet point.
         lane_start = time.perf_counter() if perf is not None else None
         analysis_context.update(
             evaluate_lane_violation(
@@ -1459,11 +1530,15 @@ class BehaviorAnalyzer(
         hold_direction = analysis_context["direction"]
         if hold_direction not in ("UP", "DOWN"):
             hold_direction = self.last_valid_direction.get(track_id)
+
+        # WHY: Khi backward da confirm thi skip handrail final.
+        # Rule nghiep vu hien tai uu tien `Di Lui`, tranh vua bao backward vua ep logic Khong Vin/Vin Sai Ben.
         carry_pose = update_hold_context(
             hold_direction,
             skip_handrail=bool(analysis_context["backward_confirmed"]),
         )
 
+        # WHY: `IDLE` nhung chua du bang chung `Dung Yen` thi khong nen goi la vi pham.
         if (
             analysis_context["direction"] == "IDLE"
             and not analysis_context["standing_still_confirmed"]
@@ -1478,6 +1553,7 @@ class BehaviorAnalyzer(
                 ),
             )
 
+        # FLOW: `IDLE` + da confirm standing thi tong hop warning ngay, khong can qua carry.
         if analysis_context["direction"] == "IDLE":
             warnings = self._collect_warnings(
                 analysis_context["wrong_lane"],
@@ -1506,6 +1582,8 @@ class BehaviorAnalyzer(
                 color=color,
             )
 
+        # FLOW: Carry duoc danh gia sau handrail vi no can hand claim/hold state de tranh dam logic.
+        # WARNING: Carry chi sinh warning `Mang Vac`, khong duoc ghi de len handrail final.
         carry_start = time.perf_counter() if perf is not None else None
         carry_info = evaluate_carry(
             self,
@@ -1552,6 +1630,7 @@ class BehaviorAnalyzer(
         from_subject_id: AnalysisSubjectID,
         to_subject_id: AnalysisSubjectID,
     ) -> None:
+        # WHY: Khi candidate duoc relink/promote sang subject moi, warning history phai di theo de khong reset canh bao.
         if from_subject_id == to_subject_id:
             return
 
@@ -1593,7 +1672,10 @@ class BehaviorAnalyzer(
             if from_subject_id in history_map:
                 history_map[to_subject_id] = history_map.pop(from_subject_id)
 
-    def cleanup_inactive_tracks(self, active_track_ids):
+    def cleanup_inactive_tracks(
+        self,
+        active_track_ids: Iterable[AnalysisSubjectID],
+    ) -> None:
         active_track_ids = set(active_track_ids)
         history_maps = [
             self.hip_motion_history,

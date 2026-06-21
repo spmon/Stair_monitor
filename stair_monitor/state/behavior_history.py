@@ -1,8 +1,12 @@
+from __future__ import annotations
+
 import numpy as np
 
-from stair_monitor.common.types import AnalysisSubjectID
+from stair_monitor.common.types import AnalysisSubjectID, HoldStatusLabel, Point
 from stair_monitor.config.settings import SETTINGS
 
+# File nay chua cac bo dem/history de confirm hanh vi qua nhieu frame.
+# WHY: Nhieu rule nhu lane, handrail, backward, standing se sai neu ket luan ngay tren 1 frame rung keypoint.
 
 class BehaviorHistoryMixin:
     """Mixin gom cac bo history theo track_id cho analyzer.
@@ -55,7 +59,11 @@ class BehaviorHistoryMixin:
 
     # hold_raw_status la ket qua cua tung frame.
     # hold_final_status la ket qua sau khi da qua bo loc history de chong nhieu keypoint/YOLO.
-    def _get_hold_status_history_state(self, track_id: AnalysisSubjectID):
+    def _get_hold_status_history_state(
+        self,
+        track_id: AnalysisSubjectID,
+    ) -> tuple[int, int, int, int, int, str, bool]:
+        """Doc tong hop history hold hien tai de suy ra hold final cua track."""
         history = self.hold_status_history.get(track_id, [])
         hold_correct_hits = sum(1 for status in history if status == "CORRECT")
         hold_wrong_side_hits = sum(1 for status in history if status == "WRONG_SIDE")
@@ -106,7 +114,11 @@ class BehaviorHistoryMixin:
             holding,
         )
 
-    def _update_hold_status_history(self, track_id: AnalysisSubjectID, hold_final_status_raw):
+    def _update_hold_status_history(
+        self,
+        track_id: AnalysisSubjectID,
+        hold_final_status_raw: HoldStatusLabel | str,
+    ) -> tuple[int, int, int, int, int, str, bool]:
         """Cap nhat history vin tay va tra ra trang thai da duoc bo loc.
 
         Args:
@@ -147,6 +159,7 @@ class BehaviorHistoryMixin:
         return trailing_count
 
     def _get_handrail_hit_history_state(self, track_id: AnalysisSubjectID) -> dict[str, int | bool]:
+        """Tong hop hit/miss cua tung wrist de debug va confirm handrail on dinh hon."""
         left_history = self.left_handrail_hit_history.get(track_id, [])
         right_history = self.right_handrail_hit_history.get(track_id, [])
         left_hit_count = sum(1 for is_hit in left_history if is_hit)
@@ -174,6 +187,12 @@ class BehaviorHistoryMixin:
         left_hit: bool,
         right_hit: bool,
     ) -> dict[str, int | bool]:
+        """Cap nhat hit history cho 2 wrist.
+
+        WHY:
+            - Hit count va miss count giup lead nhin ro vi sao tay dang o
+              trang thai `WAIT_HOLD_CONFIRM` thay vi nhay thang sang hold final.
+        """
         history_window = max(1, int(SETTINGS.handrail.hold_history_len))
 
         if track_id not in self.left_handrail_hit_history:
@@ -194,7 +213,10 @@ class BehaviorHistoryMixin:
         return self._get_handrail_hit_history_state(track_id)
 
     # Doc lai trang thai sai lan da tich luy truoc do khi frame hien tai chua du dieu kien cap nhat.
-    def _get_lane_history_state(self, track_id: AnalysisSubjectID):
+    def _get_lane_history_state(
+        self,
+        track_id: AnalysisSubjectID,
+    ) -> tuple[int, bool]:
         """Lay tong hop lane history hien co cua mot track_id.
 
         Args:
@@ -216,7 +238,11 @@ class BehaviorHistoryMixin:
         return lane_wrong_hits, wrong_lane_confirmed
 
     # Lane history giup tranh bao sai chi vi 1 vai frame pose rung.
-    def _update_lane_history(self, track_id: AnalysisSubjectID, wrong_lane_raw):
+    def _update_lane_history(
+        self,
+        track_id: AnalysisSubjectID,
+        wrong_lane_raw: bool | None,
+    ) -> tuple[int, bool]:
         """Them 1 mau lane raw vao history cua track hien tai.
 
         Args:
@@ -240,7 +266,11 @@ class BehaviorHistoryMixin:
         return self._get_lane_history_state(track_id)
 
     # Di lui chi duoc xac nhan khi direction va body facing on dinh trong nhieu frame lien tiep.
-    def _update_backward_history(self, track_id: AnalysisSubjectID, backward_raw):
+    def _update_backward_history(
+        self,
+        track_id: AnalysisSubjectID,
+        backward_raw: bool | None,
+    ) -> tuple[int, bool]:
         """Cap nhat history Di Lui theo track_id.
 
         Args:
@@ -270,7 +300,11 @@ class BehaviorHistoryMixin:
         )
         return backward_hits, backward_confirmed
 
-    def update_standing_still(self, track_id: AnalysisSubjectID, p_motion):
+    def update_standing_still(
+        self,
+        track_id: AnalysisSubjectID,
+        p_motion: Point | None,
+    ) -> tuple[bool, int, bool, float | None, int]:
         """
         Cap nhat history Dung Yen doc lap voi direction.
 
@@ -292,6 +326,9 @@ class BehaviorHistoryMixin:
         """
         # Dung lich su p_motion de kiem tra do dao dong tong the cua nguoi trong vung cau thang.
         # Logic dung yen doc lap voi direction: nguoi chua co UP/DOWN van co the bi xet dung yen.
+        if p_motion is None:
+            return False, 0, False, None, 0
+
         if track_id not in self.standing_motion_history:
             self.standing_motion_history[track_id] = []
 
@@ -340,7 +377,11 @@ class BehaviorHistoryMixin:
             len(points),
         )
 
-    def _update_standing_history(self, track_id: AnalysisSubjectID, p_motion):
+    def _update_standing_history(
+        self,
+        track_id: AnalysisSubjectID,
+        p_motion: Point | None,
+    ) -> tuple[bool, int, bool, float | None, int]:
         """Alias giu ten cu cho logic standing history.
 
         Args:

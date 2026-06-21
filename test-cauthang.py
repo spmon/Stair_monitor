@@ -24,12 +24,29 @@ from stair_monitor.state.person_identity import PersonIdentityManager
 from stair_monitor.vision.geometry import extract_pose_features
 
 
+# File nay la entry point chinh cua ban Windows/demo.
+# FLOW: video/frame -> YOLO pose -> features -> identity -> analyzer -> overlay -> output video.
+# WHY: Neu doi sang RTSP thi phan "mo source" thay doi, con pipeline tu frame tro di van giong nhau.
 CONFIG = load_camera_config()
 
 
 # Main loop cua demo stair_monitor tren Windows.
 # Flow: mo video -> doc frame -> chay model/tracker -> xu ly tung person -> ve overlay -> ghi output.
 def process_video():
+    """Chay toan bo pipeline demo offline tren Windows.
+
+    INPUT:
+        - `CONFIG`: camera JSON da load san, chua ROI/line/step.
+        - `SETTINGS.video.input_path`: file video dau vao.
+
+    OUTPUT:
+        - Ve overlay len frame.
+        - Co the ghi output video va snapshot debug.
+
+    WHY:
+        - File nay chi dong vai tro dieu phoi. Business logic that nam o
+          `extract_pose_features()`, `PersonIdentityManager` va `BehaviorAnalyzer`.
+    """
     # Mo model pose va khoi tao analyzer cho logic stair_monitor.
     model = YOLO("yolo11x-pose.pt")
     analyzer = BehaviorAnalyzer(CONFIG)
@@ -96,6 +113,8 @@ def process_video():
             time.perf_counter() if SETTINGS.performance.enable_perf_log else None
         )
 
+        # FLOW: Day la dau ra raw cua model, gom bbox + yolo_track_id + keypoints.
+        # WHY: Analyzer khong doc truc tiep frame; moi logic sau deu bat dau tu ket qua pose nay.
         results = model.track(
             model_frame,
             conf=0.7,
@@ -118,7 +137,7 @@ def process_video():
             )
 
             if SETTINGS.demo.draw_debug and (
-                not SETTINGS.demo.demo_mode or SETTINGS.demo.handrail_debug_only
+                not SETTINGS.demo.demo_mode or SETTINGS.demo.focus_debug_only
             ):
                 draw_scene_guides(overlay_frame, CONFIG, analyzer)
 
@@ -136,7 +155,11 @@ def process_video():
                 for box, tid, kpt in zip(boxes, track_ids, keypoints):
                     yolo_track_id = int(tid)
 
+                    # FLOW: Chuyen keypoint raw thanh features de cac module sau tai su dung cung 1 ngon ngu du lieu.
                     features = extract_pose_features(kpt, box)
+
+                    # FLOW: Bridge tu yolo_track_id tam thoi sang analysis_subject_id/person_uid on dinh hon.
+                    # WHY: Tracker YOLO co the doi id khi che khuat; history warning khong nen reset theo moi lan doi id.
                     identity_result = identity_manager.update_detection(
                         yolo_track_id=yolo_track_id,
                         bbox=box,
@@ -156,6 +179,9 @@ def process_video():
                         )
 
                     if identity_result.analysis_subject_id:
+                        # INPUT: p_lane uu tien chan de xet inside/lane.
+                        # INPUT: p_motion uu tien motion point de xet direction/backward/standing.
+                        # OUTPUT: analyzer tra ve status, warnings va day du field debug cho rendering.
                         analysis = analyzer.analyze(
                             identity_result.analysis_subject_id,
                             p_lane,
@@ -191,6 +217,7 @@ def process_video():
                             identity_result
                         )
 
+                    # FLOW: Rendering chi ve lai ket qua da tinh xong, khong tu quyet dinh warning.
                     # Ve ket qua len frame sau khi da co full analysis.
                     draw_person_overlay(
                         overlay_frame,
@@ -208,7 +235,8 @@ def process_video():
                 for warning, until_frame in active_alert_until_frame.items()
                 if until_frame >= analyzer.frame_index
             }
-            if SETTINGS.demo.demo_mode and not SETTINGS.demo.handrail_debug_only:
+            if SETTINGS.demo.demo_mode and not SETTINGS.demo.focus_debug_only:
+                # WARNING: Badge lon nay chi tong hop warning dang active trong demo mode sach.
                 draw_demo_violation_alerts(
                     overlay_frame,
                     active_alert_until_frame,
@@ -224,6 +252,7 @@ def process_video():
                     time.perf_counter() - overlay_start
                 ) * 1000.0
 
+        # DEBUG: Snapshot giup so sanh model input sach voi overlay cuoi cung ma khong doi logic runtime.
         save_debug_snapshots(
             debug_frame_index,
             model_input_snapshot if model_input_snapshot is not None else model_frame,

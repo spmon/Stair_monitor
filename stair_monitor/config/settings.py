@@ -5,11 +5,37 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
-from stair_monitor.common.types import CameraConfigDict, ColorBGR, StepLineJson
+from stair_monitor.common.types import (
+    CameraConfigDict,
+    ColorBGR,
+    DebugFocusMode,
+    StepLineJson,
+)
+
+# File nay gom toan bo SETTINGS cua ban Windows/demo.
+# FLOW: dataclass group config -> SETTINGS singleton -> test-cauthang/analyzer/rules/rendering cung doc chung.
+# WHY: Tach setting theo nhom giup lead mo dung khu vuc can giai thich: input, lane, handrail, carry, standing, perf.
+
+def should_show_debug_focus(
+    mode: DebugFocusMode,
+    target: DebugFocusMode,
+) -> bool:
+    """Cho biet focus mode hien tai co cho phep ve nhom debug `target` hay khong."""
+    if mode == "all":
+        return target != "none"
+    if mode == "none":
+        return False
+    return mode == target
+
+
+def is_specific_debug_focus_mode(mode: DebugFocusMode) -> bool:
+    return mode not in ("all", "none")
 
 
 @dataclass(frozen=True)
 class VideoConfig:
+    """Nhom setting dau vao/dau ra video cua demo Windows."""
+
     # Video dau vao cua ban Windows/demo.
     input_path: str = field(
         default_factory=lambda: str(
@@ -32,6 +58,8 @@ class VideoConfig:
 
 @dataclass(frozen=True)
 class DemoOverlayConfig:
+    """Nhom setting giao dien demo va debug overlay."""
+
     # Bat giao dien demo gon hoac giao dien debug day du.
     demo_mode: bool = True
     # Flag tong de bat/tat thong tin debug phuc vu quan sat demo.
@@ -46,8 +74,10 @@ class DemoOverlayConfig:
     draw_safe_status: bool = False
     # Demo badge canh bao se duoc giu them N giay.
     demo_alert_hold_seconds: float = 1.0
-    # Khi bat chi render debug handrail gon: wrist, distance, hit/miss va ket luan.
-    show_handrail_debug_only: bool = True
+    # Chon nhom debug can tap trung. "all" chi co tac dung khi enable_debug_overlay bat.
+    debug_focus_mode: DebugFocusMode = "feet"
+    # Legacy compatibility flag; neu bat thi runtime map sang focus mode handrail.
+    show_handrail_debug_only: bool = False
     # Ve line tu wrist toi diem gan nhat tren handrail khi debug handrail.
     show_handrail_distance_lines: bool = True
     # Ve text khoang cach ngan gon cho wrist khi debug handrail.
@@ -55,7 +85,10 @@ class DemoOverlayConfig:
 
     @property
     def draw_debug(self) -> bool:
-        return self.enable_debug_overlay or self.show_handrail_debug_only
+        return (
+            self.enable_debug_overlay
+            or self.focus_debug_only
+        )
 
     @property
     def draw_debug_detail(self) -> bool:
@@ -71,11 +104,23 @@ class DemoOverlayConfig:
 
     @property
     def handrail_debug_only(self) -> bool:
-        return self.show_handrail_debug_only
+        return self.effective_debug_focus_mode == "handrail"
+
+    @property
+    def effective_debug_focus_mode(self) -> DebugFocusMode:
+        if self.show_handrail_debug_only:
+            return "handrail"
+        return self.debug_focus_mode
+
+    @property
+    def focus_debug_only(self) -> bool:
+        return is_specific_debug_focus_mode(self.effective_debug_focus_mode)
 
 
 @dataclass(frozen=True)
 class ViolationDisplayConfig:
+    """Nhom setting nhan hien thi va mau sac cua warning/status."""
+
     # Mapping nhan noi bo -> nhan hien thi tren overlay/alert.
     display_names: dict[str, str] = field(
         default_factory=lambda: {
@@ -118,6 +163,8 @@ class ViolationDisplayConfig:
 
 @dataclass(frozen=True)
 class CameraProfileConfig:
+    """Nhom setting profile camera anh huong mapping direction/lane/backward."""
+
     # True:
     # dung goc camera hien tai, giu nguyen logic cu
     #
@@ -133,6 +180,8 @@ class CameraProfileConfig:
 
 @dataclass(frozen=True)
 class DirectionConfig:
+    """Nhom setting history va nguong suy ra direction."""
+
     # True/False dao quy uoc dy -> UP/DOWN cho profile camera cu.
     sign_normal: bool = False
     # So frame history motion giu lai de tinh dy.
@@ -145,6 +194,8 @@ class DirectionConfig:
 
 @dataclass(frozen=True)
 class LaneConfig:
+    """Nhom setting history sai lan va grace frame khi mat feet."""
+
     # True/False dao mapping side_value -> sai lan theo direction.
     sign_normal: bool = True
     # Chieu dai history sai lan theo track_id.
@@ -157,6 +208,8 @@ class LaneConfig:
 
 @dataclass(frozen=True)
 class HandrailConfig:
+    """Nhom setting cua so signed-distance va history cho logic vin tay."""
+
     # Signed distance toi da de wrist duoc xem la nam trong cua so lan can trai.
     left_max_distance: int = 120
     # Signed distance toi da de wrist duoc xem la nam trong cua so lan can phai.
@@ -175,6 +228,8 @@ class HandrailConfig:
 
 @dataclass(frozen=True)
 class CarryConfig:
+    """Nhom setting nguong tu the tay/torso va history cho logic Mang Vac."""
+
     # Nguong goc tay duoc xem la dang gap theo logic Mang Vac.
     carry_arm_angle_threshold: int = 150
     # Chieu dai history carry 2 tay.
@@ -211,6 +266,8 @@ class CarryConfig:
 
 @dataclass(frozen=True)
 class BackwardConfig:
+    """Nhom setting history va do tin cay cho logic Di Lui."""
+
     # Chieu dai history Di Lui.
     history_len: int = 15
     # So hit backward toi thieu de xac nhan.
@@ -221,6 +278,8 @@ class BackwardConfig:
 
 @dataclass(frozen=True)
 class StandingConfig:
+    """Nhom setting history motion cho logic Dung Yen."""
+
     # Chieu dai history motion cho Dung Yen.
     still_history_len: int = 18
     # So hit standing toi thieu de xac nhan.
@@ -231,16 +290,38 @@ class StandingConfig:
 
 @dataclass(frozen=True)
 class VirtualFeetConfig:
+    """Nhom setting suy virtual feet khi mat ankle."""
+
     # Scale trung tinh cho virtual feet shoulder + hip.
-    shoulder_hip_scale: float = 0.85
+    shoulder_hip_scale: float = 0.9
 
 
 @dataclass(frozen=True)
 class PersonIdentityConfig:
+    """Nhom setting stable identity/relink/enter-exit cho demo Windows."""
+
     # Bat lop person_uid on dinh de giam reset history khi YOLO doi track_id.
     enable_stable_identity: bool = True
     # So frame trusted feet can nam trong ROI de promote candidate thanh person_id.
     entry_confirm_frames: int = 2
+    # Bat duong promote an toan cho nguoi bi che khuat luc vao ROI.
+    allow_occluded_entry_promotion: bool = True
+    # Candidate inside khong co outside proof phai du tuoi frame moi duoc promote.
+    occluded_entry_min_age_frames: int = 10
+    # Candidate inside khong co outside proof phai on dinh trong ROI du so frame nay.
+    occluded_entry_min_inside_frames: int = 8
+    # Candidate inside khong co outside proof phai co it nhat so frame motion hop ly nay.
+    occluded_entry_min_motion_frames: int = 4
+    # Block occluded promote neu van co LOST_INSIDE ghost hop ly o gan de uu tien relink.
+    occluded_entry_block_if_any_lost_inside_ghost: bool = True
+    # Block occluded promote neu candidate con overlap/qua gan voi active person khac.
+    occluded_entry_block_if_near_active_person: bool = True
+    # Nguong IoU de xem candidate con dang dinh vao active person khac.
+    occluded_entry_near_active_iou_threshold: float = 0.15
+    # Nguong khoang cach de xem candidate con qua gan active person khac.
+    occluded_entry_near_active_distance_px: float = 80.0
+    # Chi cho occluded promote khi feet source la trusted feet that/safe.
+    occluded_entry_require_trusted_feet: bool = True
     # So frame trusted feet can nam ngoai ROI de xac nhan EXIT.
     exit_confirm_frames: int = 2
     # Candidate ngoai ROI duoc giu toi da bao nhieu frame truoc khi bo.
@@ -271,6 +352,8 @@ class PersonIdentityConfig:
 
 @dataclass(frozen=True)
 class StepBandConfig:
+    """Nhom setting map ankle vao step band de debug va ho tro Buoc 2 Bac."""
+
     # Margin an toan quanh ranh gioi STEP_BAND khi map ankle vao step_index.
     boundary_margin_px: int = 2
     # Cho phep point hoi lech ngoai polygon van bam vao band gan nhat de debug on dinh hon.
@@ -283,6 +366,8 @@ class StepBandConfig:
 
 @dataclass(frozen=True)
 class TwoStepSkipConfig:
+    """Nhom setting canh bao Buoc 2 Bac."""
+
     # Bat/tat logic canh bao "Buoc 2 Bac".
     enabled: bool = True
     # Hai ankle lech it nhat bao nhieu bac moi xem la vi pham.
@@ -322,6 +407,8 @@ class TwoStepSkipConfig:
 
 @dataclass(frozen=True)
 class PerformanceConfig:
+    """Nhom setting log hieu nang cua pipeline demo."""
+
     # Bat log thong ke thoi gian tung block lon.
     enable_perf_log: bool = True
     # So frame moi lan in thong ke perf.
@@ -330,6 +417,8 @@ class PerformanceConfig:
 
 @dataclass(frozen=True)
 class AppSettings:
+    """Root settings gom cac nhom config lon cua toan bo demo."""
+
     video: VideoConfig = field(default_factory=VideoConfig)
     demo: DemoOverlayConfig = field(default_factory=DemoOverlayConfig)
     violation: ViolationDisplayConfig = field(default_factory=ViolationDisplayConfig)

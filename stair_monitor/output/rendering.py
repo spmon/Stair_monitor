@@ -1,12 +1,32 @@
 ﻿import os
-
 import cv2
+from typing import TYPE_CHECKING
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from stair_monitor.common.types import ColorBGR, Point, PoseFeatures
-from stair_monitor.config.settings import SETTINGS
+from stair_monitor.common.types import (
+    AnalysisLike,
+    BBox,
+    BBoxArray,
+    ColorBGR,
+    DebugFocusMode,
+    DebugInfoDict,
+    FrameArray,
+    KeypointsArray,
+    Numeric,
+    Point,
+    PoseFeatures,
+    TextAnchor,
+)
+from stair_monitor.config.settings import SETTINGS, should_show_debug_focus
 from stair_monitor.vision.geometry import extract_pose_features
+
+if TYPE_CHECKING:
+    from stair_monitor.core.analyzer import BehaviorAnalyzer
+
+# File nay chi phuc vu hien thi overlay/debug cho ban Windows/demo.
+# FLOW: AnalysisResult + features -> bbox/text/panel debug/badge alert.
+# WHY: Logic nhan dien that su phai nam o analyzer va rule files, khong duoc nam trong rendering.
 
 # Font cache de tranh moi frame lai load font tieng Viet mot lan.
 FONT_CACHE = {}
@@ -40,12 +60,19 @@ DEMO_ALERT_CORNER_RADIUS = 12
 DEMO_ALERT_BOTTOM_MARGIN = 30
 
 
-def _show_handrail_debug_only() -> bool:
-    return SETTINGS.demo.handrail_debug_only
+def _get_debug_focus_mode() -> DebugFocusMode:
+    return SETTINGS.demo.effective_debug_focus_mode
+
+
+def _should_show_debug_focus(target: DebugFocusMode) -> bool:
+    return should_show_debug_focus(_get_debug_focus_mode(), target)
 
 
 # Chon font co the ve tieng Viet co dau tren Windows/demo.
-def get_vietnamese_font(font_size=28, bold=False):
+def get_vietnamese_font(
+    font_size: int = 28,
+    bold: bool = False,
+) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """Lay font co the ve tieng Viet co dau tren Windows/demo.
 
     Args:
@@ -75,22 +102,27 @@ def get_vietnamese_font(font_size=28, bold=False):
 
 
 # Quy doi BGR cua OpenCV sang RGB de PIL ve dung mau.
-def _bgr_to_rgb(color):
+def _bgr_to_rgb(color: ColorBGR) -> tuple[int, int, int]:
     return (color[2], color[1], color[0])
 
 
 # Chuyen frame qua PIL de ve text tieng Viet co dau.
-def _frame_to_pil(frame):
+def _frame_to_pil(frame: FrameArray) -> Image.Image:
     return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
 
 # Ghi noi dung PIL ve lai frame OpenCV.
-def _pil_to_frame(pil_image, frame):
+def _pil_to_frame(pil_image: Image.Image, frame: FrameArray) -> None:
     frame[:] = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
 
 
 # Do kich thuoc box text truoc khi ve de canh le va tranh text bi cat.
-def _measure_vietnamese_lines(lines, font_size=28, padding=14, line_gap=8):
+def _measure_vietnamese_lines(
+    lines: list[str],
+    font_size: int = 28,
+    padding: int = 14,
+    line_gap: int = 8,
+) -> tuple[int, int]:
     if not lines:
         return 0, 0
 
@@ -122,15 +154,15 @@ class VietnameseTextDrawer:
 
     # Helper nay chi phuc vu overlay/demo.
     # Logic nhan dien khong duoc phu thuoc vao viec co ve text hay khong.
-    def __init__(self, frame, enabled=True):
+    def __init__(self, frame: FrameArray, enabled: bool = True) -> None:
         self.frame = frame
         self.enabled = enabled and SETTINGS.demo.enable_vietnamese_text
         self.operations = []
 
-    def __enter__(self):
+    def __enter__(self) -> "VietnameseTextDrawer":
         return self
 
-    def __exit__(self, _exc_type, _exc, _tb):
+    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
         if not self.enabled or not self.operations:
             self.operations = []
             return
@@ -201,7 +233,14 @@ class VietnameseTextDrawer:
         _pil_to_frame(pil_image, self.frame)
         self.operations = []
 
-    def text(self, text, position, font_size=28, color=(255, 255, 255), bold=False):
+    def text(
+        self,
+        text: str,
+        position: Point,
+        font_size: int = 28,
+        color: ColorBGR = (255, 255, 255),
+        bold: bool = False,
+    ) -> None:
         if not text:
             return
         if not self.enabled:
@@ -230,17 +269,17 @@ class VietnameseTextDrawer:
 
     def transparent_box(
         self,
-        x,
-        y,
-        lines,
-        alpha=0.45,
-        font_size=28,
-        text_color=(255, 255, 255),
-        box_color=(28, 36, 48),
-        padding=14,
-        line_gap=8,
-        anchor="left",
-    ):
+        x: int,
+        y: int,
+        lines: list[str],
+        alpha: float = 0.45,
+        font_size: int = 28,
+        text_color: ColorBGR = (255, 255, 255),
+        box_color: ColorBGR = (28, 36, 48),
+        padding: int = 14,
+        line_gap: int = 8,
+        anchor: TextAnchor = "left",
+    ) -> tuple[int, int]:
         if not lines:
             return 0, 0
 
@@ -305,14 +344,14 @@ class VietnameseTextDrawer:
 
 # Ham boc de ve 1 dong text tieng Viet tren frame.
 def draw_vietnamese_text(
-    frame,
-    text,
-    position,
-    font_size=28,
-    color=(255, 255, 255),
-    bold=False,
-    text_drawer=None,
-):
+    frame: FrameArray,
+    text: str,
+    position: Point,
+    font_size: int = 28,
+    color: ColorBGR = (255, 255, 255),
+    bold: bool = False,
+    text_drawer: VietnameseTextDrawer | None = None,
+) -> None:
     """Ve 1 dong text tieng Viet len frame.
 
     Args:
@@ -354,19 +393,19 @@ def draw_vietnamese_text(
 
 # Ve box nen trong suot + text tieng Viet.
 def draw_transparent_text_box(
-    frame,
-    x,
-    y,
-    lines,
-    alpha=0.45,
-    font_size=28,
-    text_color=(255, 255, 255),
-    box_color=(28, 36, 48),
-    padding=14,
-    line_gap=8,
-    anchor="left",
-    text_drawer=None,
-):
+    frame: FrameArray,
+    x: int,
+    y: int,
+    lines: list[str],
+    alpha: float = 0.45,
+    font_size: int = 28,
+    text_color: ColorBGR = (255, 255, 255),
+    box_color: ColorBGR = (28, 36, 48),
+    padding: int = 14,
+    line_gap: int = 8,
+    anchor: TextAnchor = "left",
+    text_drawer: VietnameseTextDrawer | None = None,
+) -> tuple[int, int]:
     """Ve box trong suot co text tieng Viet.
 
     Args:
@@ -421,18 +460,79 @@ def draw_transparent_text_box(
         )
 
 
+def _draw_compact_focus_overlay(
+    frame: FrameArray,
+    box: BBox | BBoxArray,
+    lines: list[str],
+    *,
+    text_drawer: VietnameseTextDrawer | None = None,
+    anchor: TextAnchor = "left",
+) -> None:
+    if not lines:
+        return
+
+    x1, y1, x2, y2 = map(int, box)
+    frame_h, frame_w = frame.shape[:2]
+    box_width, _box_height = _measure_vietnamese_lines(
+        lines,
+        font_size=13,
+        padding=8,
+        line_gap=4,
+    )
+    side_margin = 14
+    left_space = x1
+    right_space = frame_w - x2
+
+    if anchor == "left":
+        if right_space >= box_width + side_margin:
+            box_x = x2 + side_margin
+            box_anchor = "left"
+        elif left_space >= box_width + side_margin:
+            box_x = x1 - side_margin
+            box_anchor = "right"
+        else:
+            box_x = min(frame_w - 4, x2 + side_margin)
+            box_anchor = "left"
+    else:
+        if left_space >= box_width + side_margin:
+            box_x = x1 - side_margin
+            box_anchor = "right"
+        elif right_space >= box_width + side_margin:
+            box_x = x2 + side_margin
+            box_anchor = "left"
+        else:
+            box_x = max(box_width + 4, x1 - side_margin)
+            box_anchor = "right"
+
+    box_y = max(0, min(y1 + 8, max(0, frame_h - 20)))
+    draw_transparent_text_box(
+        frame,
+        box_x,
+        box_y,
+        lines,
+        alpha=0.50,
+        font_size=13,
+        text_color=(255, 255, 255),
+        box_color=(18, 18, 18),
+        padding=8,
+        line_gap=4,
+        anchor=box_anchor,
+        text_drawer=text_drawer,
+    )
+
+
 # Ve nhan trang thai cho tung nguoi, tu dong canh lai de khong bi cat mep frame.
 def draw_label_with_background(
-    frame,
-    text,
-    x,
-    y,
-    font_scale=0.9,
-    text_color=(255, 255, 255),
-    bg_color=(0, 0, 255),
-    padding=8,
-    text_drawer=None,
-):
+    frame: FrameArray,
+    text: str,
+    x: int,
+    y: int,
+    font_scale: float = 0.9,
+    text_color: ColorBGR = (255, 255, 255),
+    bg_color: ColorBGR = (0, 0, 255),
+    padding: int = 8,
+    text_drawer: VietnameseTextDrawer | None = None,
+) -> None:
     """Ve label status co nen cho 1 nguoi.
 
     Args:
@@ -505,8 +605,29 @@ def _format_session_lifecycle_label(session_lifecycle: str) -> str:
     return session_lifecycle.replace("_", " ")
 
 
+def _format_optional_debug_number(value: object) -> str:
+    if isinstance(value, (int, float)):
+        return f"{float(value):.2f}"
+    return "NA"
+
+
+def _build_identity_count_summary(analysis: AnalysisLike) -> str:
+    total_entered = analysis.get("total_entered_count", analysis.get("entered_count", 0))
+    total_exited = analysis.get("total_exited_count", analysis.get("exited_count", 0))
+    active_inside = analysis.get("active_or_lost_inside_count", 0)
+    confirmed_entered = analysis.get("total_confirmed_entered_count")
+    occluded_entered = analysis.get("total_occluded_entered_count")
+    if isinstance(confirmed_entered, int) and isinstance(occluded_entered, int):
+        return (
+            "CNT "
+            f"E={total_entered} CFM={confirmed_entered} OCC={occluded_entered} "
+            f"X={total_exited} IN={active_inside}"
+        )
+    return f"CNT E={total_entered} X={total_exited} IN={active_inside}"
+
+
 def _draw_feet_debug_marker(
-    frame,
+    frame: FrameArray,
     point: Point | None,
     color: ColorBGR,
     label: str,
@@ -535,7 +656,7 @@ def _draw_feet_debug_marker(
 
 
 def _draw_feet_compare_line(
-    frame,
+    frame: FrameArray,
     start_point: Point | None,
     end_point: Point | None,
     color: ColorBGR,
@@ -597,7 +718,7 @@ def _short_direction_source_label(direction_source: str) -> str:
     return direction_source
 
 
-def _format_person_uid_label(analysis) -> str:
+def _format_person_uid_label(analysis: AnalysisLike) -> str:
     person_uid_label = analysis.get("person_uid_label")
     if person_uid_label:
         return str(person_uid_label)
@@ -616,33 +737,36 @@ def _format_person_uid_label(analysis) -> str:
     return ""
 
 
-def _format_step_debug_value(step_index) -> str:
+def _format_step_debug_value(step_index: int | None) -> str:
     return str(step_index) if isinstance(step_index, int) else "?"
 
 
-def _format_step_distance(distance_value) -> str:
+def _format_step_distance(distance_value: Numeric | None) -> str:
     if isinstance(distance_value, (int, float)):
         return f"{float(distance_value):.1f}"
     return "NA"
 
 
-def _format_offset_pair(offset_x, offset_y) -> str:
+def _format_offset_pair(offset_x: Numeric | None, offset_y: Numeric | None) -> str:
     if not isinstance(offset_x, (int, float)) or not isinstance(offset_y, (int, float)):
         return "(NA,NA)"
     return f"({int(offset_x):+d},{int(offset_y):+d})"
 
 
-def _format_handrail_distance_value(distance_value) -> str:
+def _format_handrail_distance_value(distance_value: Numeric | None) -> str:
     if isinstance(distance_value, (int, float)):
         return str(int(round(float(distance_value))))
     return "NA"
 
 
-def _format_handrail_bool_text(value) -> str:
+def _format_handrail_bool_text(value: object) -> str:
     return "True" if bool(value) else "False"
 
 
-def _format_handrail_count_text(hit_count, confirm_required) -> str:
+def _format_handrail_count_text(
+    hit_count: Numeric | None,
+    confirm_required: Numeric | None,
+) -> str:
     hit_count_value = int(hit_count) if isinstance(hit_count, (int, float)) else 0
     confirm_required_value = (
         int(confirm_required)
@@ -652,13 +776,18 @@ def _format_handrail_count_text(hit_count, confirm_required) -> str:
     return f"{hit_count_value}/{confirm_required_value}"
 
 
-def _format_carry_score_value(score_value) -> str:
+def _format_carry_score_value(score_value: Numeric | None) -> str:
     if isinstance(score_value, (int, float)):
         return f"{float(score_value):.1f}"
     return "NA"
 
 
-def _draw_handrail_joint_marker(frame, point, label, color) -> None:
+def _draw_handrail_joint_marker(
+    frame: FrameArray,
+    point: Point | None,
+    label: str,
+    color: ColorBGR,
+) -> None:
     if point is None:
         return
 
@@ -675,7 +804,10 @@ def _draw_handrail_joint_marker(frame, point, label, color) -> None:
     )
 
 
-def _draw_handrail_arm_segments(frame, features: PoseFeatures) -> None:
+def _draw_handrail_arm_segments(
+    frame: FrameArray,
+    features: PoseFeatures,
+) -> None:
     left_shoulder = features.get("left_shoulder")
     left_elbow = features.get("left_elbow")
     left_wrist = features.get("left_wrist")
@@ -701,10 +833,10 @@ def _draw_handrail_arm_segments(frame, features: PoseFeatures) -> None:
 
 
 def _draw_handrail_distance_line(
-    frame,
+    frame: FrameArray,
     wrist_point: Point | None,
     nearest_point: Point | None,
-    distance_value,
+    distance_value: Numeric | None,
     hit: bool,
     wrist_label: str,
 ) -> None:
@@ -731,7 +863,7 @@ def _draw_handrail_distance_line(
     )
 
 
-def _build_handrail_debug_only_lines(analysis) -> list[str]:
+def _build_handrail_debug_only_lines(analysis: AnalysisLike) -> list[str]:
     return [
         (
             "LW d="
@@ -768,25 +900,6 @@ def _build_handrail_debug_only_lines(analysis) -> list[str]:
             + ("1" if analysis.get("right_holding", False) else "0")
         ),
         f"HANDRAIL={analysis.get('handrail_status', 'NOT_EVALUATED')}",
-        (
-            "CARRY_ALLOW L="
-            + ("1" if analysis.get("left_carry_allowed", True) else "0")
-            + " R="
-            + ("1" if analysis.get("right_carry_allowed", True) else "0")
-        ),
-        (
-            "CARRY_SCORE L="
-            + _format_carry_score_value(analysis.get("left_carry_score"))
-            + " R="
-            + _format_carry_score_value(analysis.get("right_carry_score"))
-        ),
-        (
-            "1H_SIDE="
-            + str(analysis.get("one_hand_carry_side", "NONE"))
-            + " CARRY="
-            + ("1" if analysis.get("is_carrying", False) else "0")
-        ),
-        "CARRY_REASON=" + str(analysis.get("carry_reason", "NO_CARRY")),
         "REASON="
         + str(
             analysis.get(
@@ -798,11 +911,11 @@ def _build_handrail_debug_only_lines(analysis) -> list[str]:
 
 
 def _draw_handrail_debug_only_overlay(
-    frame,
-    box,
+    frame: FrameArray,
+    box: BBox | BBoxArray,
     features: PoseFeatures,
-    analysis,
-    text_drawer=None,
+    analysis: AnalysisLike,
+    text_drawer: VietnameseTextDrawer | None = None,
 ) -> None:
     x1, _y1, _x2, y2 = map(int, box)
     _draw_handrail_arm_segments(frame, features)
@@ -893,10 +1006,10 @@ def _draw_handrail_debug_only_overlay(
 
 def _build_step_compare_overlay_line(
     side_label: str,
-    raw_step_index,
-    filtered_step_index,
+    raw_step_index: int | None,
+    filtered_step_index: int | None,
     step_filter_reason: str,
-    ankle_conf,
+    ankle_conf: Numeric | None,
 ) -> str:
     reason_text = step_filter_reason or "NOT_EVALUATED"
     conf_text = (
@@ -914,8 +1027,8 @@ def _build_step_compare_overlay_line(
 
 def _build_step_nearest_overlay_line(
     side_label: str,
-    nearest_band_id,
-    nearest_distance,
+    nearest_band_id: int | None,
+    nearest_distance: Numeric | None,
 ) -> str:
     nearest_band_text = str(nearest_band_id) if isinstance(nearest_band_id, int) else "?"
     return (
@@ -924,7 +1037,7 @@ def _build_step_nearest_overlay_line(
     )
 
 
-def _build_identity_overlay_lines(analysis) -> list[str]:
+def _build_identity_overlay_lines(analysis: AnalysisLike) -> list[str]:
     person_uid_label = _format_person_uid_label(analysis)
     yolo_track_id = analysis.get("yolo_track_id")
     session_lifecycle = str(analysis.get("session_lifecycle", "UNKNOWN"))
@@ -940,6 +1053,23 @@ def _build_identity_overlay_lines(analysis) -> list[str]:
     enter_confirm_target = int(
         analysis.get("identity_enter_confirm_target", 0) or 0
     )
+    occluded_age = int(analysis.get("occluded_entry_candidate_age_frames", 0) or 0)
+    occluded_age_target = int(analysis.get("occluded_entry_age_target", 0) or 0)
+    occluded_inside_frames = int(
+        analysis.get("occluded_entry_inside_frames", 0) or 0
+    )
+    occluded_inside_target = int(
+        analysis.get("occluded_entry_inside_target", 0) or 0
+    )
+    occluded_motion_frames = int(
+        analysis.get("occluded_entry_motion_frames", 0) or 0
+    )
+    occluded_motion_target = int(
+        analysis.get("occluded_entry_motion_target", 0) or 0
+    )
+    occluded_block_reason = str(
+        analysis.get("occluded_entry_block_reason", "NONE")
+    )
 
     if person_uid_label and session_lifecycle == "EXITED":
         title_line = person_uid_label
@@ -954,6 +1084,28 @@ def _build_identity_overlay_lines(analysis) -> list[str]:
     else:
         title_line = "YOLO NA"
 
+    if session_lifecycle == "OCCLUDED_ENTRY_CANDIDATE":
+        status_line = (
+            "OCCLUDED ENTRY BLOCKED"
+            if gate_reason.startswith("OCCLUDED_ENTRY_BLOCKED")
+            else "OCCLUDED ENTRY CANDIDATE"
+        )
+        lines = [
+            title_line,
+            status_line,
+            f"AGE={occluded_age}/{occluded_age_target}",
+            f"IN={occluded_inside_frames}/{occluded_inside_target}",
+            f"MOTION={occluded_motion_frames}/{occluded_motion_target}",
+            f"FEET_SRC={feet_source}",
+            f"INSIDE_TEST={inside_test}",
+        ]
+        if occluded_block_reason not in ("", "NA", "NONE"):
+            lines.append(f"BLOCK={occluded_block_reason}")
+        if gate_reason not in ("", "NA", "NONE") and gate_reason != feet_reason:
+            lines.append(f"GATE={gate_reason}")
+        lines.append(_build_identity_count_summary(analysis))
+        return lines
+
     lines = [
         title_line,
         session_lifecycle_label,
@@ -964,7 +1116,6 @@ def _build_identity_overlay_lines(analysis) -> list[str]:
     ]
     if enter_confirm_target > 0 and session_lifecycle in (
         "CANDIDATE_WAIT_ENTER",
-        "CANDIDATE_INSIDE_NO_OUTSIDE_PROOF",
         "UNASSIGNED_INSIDE_CANDIDATE",
     ):
         lines.append(f"ENTER_CNT={enter_confirm_hits}/{enter_confirm_target}")
@@ -1010,12 +1161,9 @@ def _build_identity_overlay_lines(analysis) -> list[str]:
     elif relink_state == "RELINK_REJECTED_ORDER_CONFLICT":
         lines.append("ORDER_CONFLICT")
         lines.append(f"best={relink_best or 'NA'} score={score_text}")
-    lines.append(
-        "CNT "
-        f"E={analysis.get('total_entered_count', analysis.get('entered_count', 0))} "
-        f"X={analysis.get('total_exited_count', analysis.get('exited_count', 0))} "
-        f"IN={analysis.get('active_or_lost_inside_count', 0)}"
-    )
+    if str(analysis.get("identity_entry_reason", "NONE")) == "OCCLUDED_ENTRY":
+        lines.append("ENTRY=OCCLUDED")
+    lines.append(_build_identity_count_summary(analysis))
     left_raw_step = analysis.get("left_raw_step")
     right_raw_step = analysis.get("right_raw_step")
     left_filtered_step = analysis.get("left_filtered_step")
@@ -1126,11 +1274,218 @@ def _build_identity_overlay_lines(analysis) -> list[str]:
     return lines
 
 
+def _get_debug_analysis_source(analysis: DebugInfoDict) -> DebugInfoDict:
+    debug_info = analysis.get("debug_info")
+    if isinstance(debug_info, dict):
+        return debug_info
+    return analysis
+
+
+def build_identity_debug_lines(analysis: AnalysisLike) -> list[str]:
+    debug_analysis = _get_debug_analysis_source(analysis)
+    person_uid_label = _format_person_uid_label(debug_analysis) or "NA"
+    return [
+        f"PERSON_UID:{person_uid_label}",
+        f"YOLO_TRACK_ID:{debug_analysis.get('yolo_track_id', 'NA')}",
+        f"SESSION_LIFECYCLE:{debug_analysis.get('session_lifecycle', 'UNKNOWN')}",
+        f"IDENTITY_STATUS:{debug_analysis.get('identity_status', 'ACTIVE')}",
+        f"RELINK_STATE:{debug_analysis.get('relink_state', 'NONE')}",
+        f"IDENTITY_GATE_REASON:{debug_analysis.get('identity_gate_reason', 'NA')}",
+        f"IDENTITY_INSIDE_TEST:{debug_analysis.get('identity_inside_test', 'UNKNOWN')}",
+        f"IDENTITY_OUTSIDE_PROOF:{debug_analysis.get('identity_outside_proof', False)}",
+        (
+            "OCCLUDED_ENTRY "
+            f"AGE={debug_analysis.get('occluded_entry_candidate_age_frames', 0)}/"
+            f"{debug_analysis.get('occluded_entry_age_target', 0)} "
+            f"IN={debug_analysis.get('occluded_entry_inside_frames', 0)}/"
+            f"{debug_analysis.get('occluded_entry_inside_target', 0)} "
+            f"MOTION={debug_analysis.get('occluded_entry_motion_frames', 0)}/"
+            f"{debug_analysis.get('occluded_entry_motion_target', 0)}"
+        ),
+        f"OCCLUDED_ENTRY_BLOCK_REASON:{debug_analysis.get('occluded_entry_block_reason', 'NONE')}",
+        f"OCCLUDED_ENTRY_NEAREST_GHOST_SCORE:{_format_optional_debug_number(debug_analysis.get('occluded_entry_nearest_ghost_score'))}",
+        f"OCCLUDED_ENTRY_NEAREST_ACTIVE_IOU:{_format_optional_debug_number(debug_analysis.get('occluded_entry_nearest_active_iou'))}",
+        f"OCCLUDED_ENTRY_NEAREST_ACTIVE_DISTANCE:{_format_optional_debug_number(debug_analysis.get('occluded_entry_nearest_active_distance'))}",
+        f"COUNT_EVENT_REASON:{debug_analysis.get('count_event_reason', 'NO_COUNT_EVENT')}",
+        _build_identity_count_summary(debug_analysis),
+    ]
+
+
+def build_handrail_debug_lines(analysis: AnalysisLike) -> list[str]:
+    debug_analysis = _get_debug_analysis_source(analysis)
+    return [
+        f"LW_VALID:{int(bool(debug_analysis.get('left_wrist_valid', False)))}",
+        f"RW_VALID:{int(bool(debug_analysis.get('right_wrist_valid', False)))}",
+        (
+            "LW d="
+            + _format_handrail_distance_value(
+                debug_analysis.get("left_wrist_nearest_distance")
+            )
+            + " HIT="
+            + ("1" if debug_analysis.get("left_wrist_hit", False) else "0")
+            + " CNT="
+            + _format_handrail_count_text(
+                debug_analysis.get("left_wrist_hit_count"),
+                debug_analysis.get("left_wrist_confirm_required"),
+            )
+        ),
+        (
+            "RW d="
+            + _format_handrail_distance_value(
+                debug_analysis.get("right_wrist_nearest_distance")
+            )
+            + " HIT="
+            + ("1" if debug_analysis.get("right_wrist_hit", False) else "0")
+            + " CNT="
+            + _format_handrail_count_text(
+                debug_analysis.get("right_wrist_hit_count"),
+                debug_analysis.get("right_wrist_confirm_required"),
+            )
+        ),
+        f"LW_HOLD:{int(bool(debug_analysis.get('left_holding', False)))}",
+        f"RW_HOLD:{int(bool(debug_analysis.get('right_holding', False)))}",
+        f"HANDRAIL:{debug_analysis.get('handrail_status', 'NOT_EVALUATED')}",
+        (
+            "REASON:"
+            + str(
+                debug_analysis.get(
+                    "handrail_debug_reason",
+                    debug_analysis.get("handrail_reason", "NOT_EVALUATED"),
+                )
+            )
+        ),
+    ]
+
+
+def build_carry_debug_lines(analysis: AnalysisLike) -> list[str]:
+    debug_analysis = _get_debug_analysis_source(analysis)
+    return [
+        f"L_CARRY:{debug_analysis.get('left_carry', False)}",
+        f"R_CARRY:{debug_analysis.get('right_carry', False)}",
+        f"L_CARRY_COUNT:{debug_analysis.get('left_carry_claim_hits', 0)}",
+        f"R_CARRY_COUNT:{debug_analysis.get('right_carry_claim_hits', 0)}",
+        f"L_CARRY_ALLOWED:{debug_analysis.get('left_carry_allowed', True)}",
+        f"R_CARRY_ALLOWED:{debug_analysis.get('right_carry_allowed', True)}",
+        f"ONE_HAND_CARRY_SIDE:{debug_analysis.get('one_hand_carry_side', 'NONE')}",
+        f"L_CARRY_SCORE:{_format_carry_score_value(debug_analysis.get('left_carry_score'))}",
+        f"R_CARRY_SCORE:{_format_carry_score_value(debug_analysis.get('right_carry_score'))}",
+        f"LEFT_HOLDING:{debug_analysis.get('left_holding', False)}",
+        f"RIGHT_HOLDING:{debug_analysis.get('right_holding', False)}",
+        f"CARRY:{debug_analysis.get('is_carrying', False)}",
+        f"CARRY_TYPE:{debug_analysis.get('carry_type', 'NONE')}",
+        f"CARRY_REASON:{debug_analysis.get('carry_reason', 'NO_CARRY')}",
+    ]
+
+
+def build_lane_debug_lines(analysis: AnalysisLike) -> list[str]:
+    debug_analysis = _get_debug_analysis_source(analysis)
+    return [
+        (
+            f"P_LANE:{debug_analysis['p_lane'][0]},{debug_analysis['p_lane'][1]}"
+            if debug_analysis.get("p_lane") is not None
+            else "P_LANE:NA"
+        ),
+        (
+            f"LANE_SIDE_VALUE:{int(debug_analysis['lane_side_value'])}"
+            if debug_analysis.get("lane_side_value") is not None
+            else "LANE_SIDE_VALUE:NA"
+        ),
+        f"LANE_SIDE_LABEL:{debug_analysis.get('lane_side_label', 'UNKNOWN')}",
+        f"LANE_RAW:{debug_analysis.get('lane_raw', False)}",
+        f"LANE_HITS:{debug_analysis.get('lane_hits', 0)}",
+        f"LANE_STATUS:{debug_analysis.get('lane_status', 'UNKNOWN')}",
+        f"LANE_REASON:{debug_analysis.get('lane_reason', 'NA')}",
+        f"WRONG_LANE:{debug_analysis.get('wrong_lane', False)}",
+    ]
+
+
+def build_backward_debug_lines(analysis: AnalysisLike) -> list[str]:
+    debug_analysis = _get_debug_analysis_source(analysis)
+    return [
+        f"DIRECTION:{debug_analysis.get('direction', 'UNKNOWN')}",
+        f"BODY_FACING:{debug_analysis.get('body_facing', 'UNKNOWN')}",
+        f"BODY_FACING_CONF:{debug_analysis.get('body_facing_confidence', 0.0):.2f}",
+        f"BODY_FACING_EVIDENCE_COUNT:{debug_analysis.get('body_facing_evidence_count', 0)}",
+        f"BACKWARD_RAW:{debug_analysis.get('backward_raw', False)}",
+        f"BACKWARD_HITS:{debug_analysis.get('backward_hits', 0)}",
+        f"BACKWARD_CONFIRMED:{debug_analysis.get('backward_confirmed', False)}",
+        f"BACKWARD_REASON:{debug_analysis.get('backward_reason', 'UNKNOWN')}",
+    ]
+
+
+def build_standing_debug_lines(analysis: AnalysisLike) -> list[str]:
+    debug_analysis = _get_debug_analysis_source(analysis)
+    return [
+        (
+            f"MOTION:{debug_analysis['p_motion'][0]},{debug_analysis['p_motion'][1]}"
+            if debug_analysis.get("p_motion") is not None
+            else "MOTION:NA"
+        ),
+        (
+            f"STAND_RANGE:{debug_analysis['standing_motion_range']:.1f}"
+            if debug_analysis.get("standing_motion_range") is not None
+            else "STAND_RANGE:NA"
+        ),
+        f"STAND_HITS:{debug_analysis.get('standing_hits', 0)}",
+        f"STAND_CONFIRMED:{debug_analysis.get('standing_still_confirmed', False)}",
+        f"STAND_LEN:{debug_analysis.get('standing_len', 0)}",
+        f"STATUS:{debug_analysis.get('display_status', debug_analysis.get('status', 'UNKNOWN'))}",
+    ]
+
+
+def build_two_step_debug_lines(analysis: AnalysisLike) -> list[str]:
+    debug_analysis = _get_debug_analysis_source(analysis)
+    return [
+        f"LEFT_RAW_STEP:{debug_analysis.get('left_raw_step', 'NA')}",
+        f"RIGHT_RAW_STEP:{debug_analysis.get('right_raw_step', 'NA')}",
+        f"LEFT_FILTERED_STEP:{debug_analysis.get('left_filtered_step', 'NA')}",
+        f"RIGHT_FILTERED_STEP:{debug_analysis.get('right_filtered_step', 'NA')}",
+        f"FOOT_GAP:{debug_analysis.get('foot_gap', debug_analysis.get('step_gap', 'NA'))}",
+        f"LEFT_FILTER_REASON:{debug_analysis.get('left_step_filter_reason', 'NOT_EVALUATED')}",
+        f"RIGHT_FILTER_REASON:{debug_analysis.get('right_step_filter_reason', 'NOT_EVALUATED')}",
+        f"TWO_STEP_RESULT:{debug_analysis.get('two_step_skip_confirmed', False)}",
+        f"TWO_STEP_REASON:{debug_analysis.get('two_step_skip_reason', 'NOT_EVALUATED')}",
+    ]
+
+
+def build_feet_debug_lines(analysis: AnalysisLike) -> list[str]:
+    debug_analysis = _get_debug_analysis_source(analysis)
+    return [
+        (
+            f"REAL_FEET:{debug_analysis['real_feet_point'][0]},{debug_analysis['real_feet_point'][1]}"
+            if debug_analysis.get("real_feet_point") is not None
+            else "REAL_FEET:NA"
+        ),
+        (
+            "V_SH_HIP:"
+            f"{debug_analysis['sh_hip_virtual_feet_point'][0]},"
+            f"{debug_analysis['sh_hip_virtual_feet_point'][1]}"
+            if debug_analysis.get("sh_hip_virtual_feet_point") is not None
+            else "V_SH_HIP:NA"
+        ),
+        (
+            f"SELECTED_FEET:{debug_analysis['inside_feet_point'][0]},{debug_analysis['inside_feet_point'][1]}"
+            if debug_analysis.get("inside_feet_point") is not None
+            else "SELECTED_FEET:NA"
+        ),
+        f"FEET_SOURCE:{debug_analysis.get('feet_point_source', 'FEET_UNAVAILABLE')}",
+        f"FEET_AVAILABLE:{debug_analysis.get('feet_available', False)}",
+        f"FEET_RELIABLE:{debug_analysis.get('feet_reliable', False)}",
+        f"FEET_REASON:{debug_analysis.get('feet_unavailable_reason', 'NO_SHOULDER_NO_HIP')}",
+        f"SH_HIP_PAIR:{debug_analysis.get('sh_hip_selected_pair', 'NONE')}",
+        (
+            "SH_HIP_COUNTS="
+            f"S{debug_analysis.get('sh_hip_visible_shoulder_count', 0)}/"
+            f"H{debug_analysis.get('sh_hip_visible_hip_count', 0)}"
+        ),
+    ]
+
+
 def draw_feet_comparison_debug(
-    frame,
-    box,
+    frame: FrameArray,
+    box: BBox | BBoxArray,
     features: PoseFeatures,
-    analysis=None,
+    analysis: AnalysisLike | None = None,
     text_drawer: VietnameseTextDrawer | None = None,
 ) -> None:
     """Ve raw ankle va adjusted step point cho logic two-step debug."""
@@ -1365,9 +1720,31 @@ def draw_feet_comparison_debug(
 
 # Ve cac guide debug cua scene: vach giua, polygon cau thang, 2 line lan can.
 # Phan nay chi de quan sat/demo, khong duoc anh huong logic nhan dien.
-def draw_scene_guides(frame, config, analyzer):
-    handrail_debug_only = _show_handrail_debug_only()
-    if "CENTER_LINE" in config and not handrail_debug_only:
+def draw_scene_guides(
+    frame: FrameArray,
+    config: dict[str, object],
+    analyzer: "BehaviorAnalyzer",
+) -> None:
+    """Ve cac moc scene dung cho debug nhu ROI, center line, step band va handrail.
+
+    DEBUG:
+        - Ham nay chi phuc vu giai thich hinh hoc cua camera.
+        - Khong duoc thay doi warning/behavior nhan dien.
+    """
+    show_center_line = _should_show_debug_focus("lane")
+    show_stairs_poly = (
+        _should_show_debug_focus("lane")
+        or _should_show_debug_focus("feet")
+        or _should_show_debug_focus("identity")
+        or _should_show_debug_focus("two_step")
+    )
+    show_step_bands = _should_show_debug_focus("two_step")
+    show_handrail_lines = (
+        _should_show_debug_focus("handrail")
+        or _should_show_debug_focus("carry")
+    )
+
+    if "CENTER_LINE" in config and show_center_line:
         cv2.line(
             frame,
             tuple(config["CENTER_LINE"][0]),
@@ -1375,18 +1752,18 @@ def draw_scene_guides(frame, config, analyzer):
             (0, 255, 255),
             2,
         )
-    if len(analyzer.stairs_poly) > 2 and not handrail_debug_only:
+    if len(analyzer.stairs_poly) > 2 and show_stairs_poly:
         cv2.polylines(
             frame, [analyzer.stairs_poly.reshape((-1, 1, 2))], True, (255, 0, 0), 2
         )
-    if SETTINGS.step_band.debug_show_bands and not handrail_debug_only:
+    if SETTINGS.step_band.debug_show_bands and show_step_bands:
         for step_band in getattr(analyzer, "step_bands", []):
             band_contour = np.asarray(step_band.polygon, dtype=np.int32).reshape(
                 (-1, 1, 2)
             )
             cv2.polylines(frame, [band_contour], True, (80, 200, 120), 1)
 
-    if len(analyzer.left_line) >= 2:
+    if len(analyzer.left_line) >= 2 and show_handrail_lines:
         cv2.line(
             frame,
             tuple(analyzer.left_line[0]),
@@ -1394,7 +1771,7 @@ def draw_scene_guides(frame, config, analyzer):
             (0, 165, 255),
             3,
         )
-    if len(analyzer.right_line) >= 2:
+    if len(analyzer.right_line) >= 2 and show_handrail_lines:
         cv2.line(
             frame,
             tuple(analyzer.right_line[0]),
@@ -1405,28 +1782,36 @@ def draw_scene_guides(frame, config, analyzer):
 
 
 # Lay lai feet_point da chuan hoa tu pose feature.
-def get_feet_point(box, keypoints):
+def get_feet_point(
+    box: BBox | BBoxArray | None,
+    keypoints: KeypointsArray | None,
+) -> Point | None:
+    """Lay lai `feet_point` tu features de renderer/debug dung chung cung logic voi analyzer."""
     features = extract_pose_features(keypoints, box)
     return features.get("feet_point")
 
 
 # Lay lai motion_point da chuan hoa tu pose feature.
-def get_motion_point(box, keypoints):
+def get_motion_point(
+    box: BBox | BBoxArray | None,
+    keypoints: KeypointsArray | None,
+) -> Point | None:
+    """Lay lai `motion_point` tu features de debug dung/chuyen dong dung cung moc voi analyzer."""
     features = extract_pose_features(keypoints, box)
     return features.get("motion_point")
 
 # Ve overlay cho tung nguoi sau khi analyzer da tra ket qua.
 # Ham nay chi hien thi demo, khong duoc can du vao logic nhan dien.
 def draw_person_overlay(
-    frame,
-    box,
-    keypoints,
-    lane_point,
-    motion_point,
-    analysis,
+    frame: FrameArray,
+    box: BBox | BBoxArray,
+    keypoints: KeypointsArray | None,
+    lane_point: Point | None,
+    motion_point: Point | None,
+    analysis: AnalysisLike,
     features: PoseFeatures | None = None,
-    text_drawer=None,
-):
+    text_drawer: VietnameseTextDrawer | None = None,
+) -> None:
     """Ve overlay cho 1 nguoi tu result dict da co san.
 
     Args:
@@ -1445,19 +1830,23 @@ def draw_person_overlay(
         File nay chi ve overlay. Moi logic nhan dien phai duoc tinh xong o
         analyzer truoc khi ham nay duoc goi.
     """
+    # WHY: Clean demo mode chi hien badge tong hop, tranh roi man hinh khi dang present.
     clean_demo_mode = (
         SETTINGS.demo.demo_mode and not SETTINGS.demo.draw_debug
     )
     if clean_demo_mode:
         # Demo mode chi giu giao dien tong hop, khong ve bat ky overlay theo tung nguoi nao.
         return
-    handrail_debug_only = _show_handrail_debug_only()
+    focus_mode = _get_debug_focus_mode()
+    handrail_focus = focus_mode == "handrail"
+    all_debug_focus = focus_mode == "all"
 
     x1, y1, x2, y2 = map(int, box)
     display_status = analysis.get("display_status", analysis.get("status", ""))
     cv2.rectangle(frame, (x1, y1), (x2, y2), analysis["color"], 2)
 
-    if display_status and not handrail_debug_only:
+    if display_status and not handrail_focus:
+        # OUTPUT: `display_status` la phien ban gon cua ket qua cuoi cung, de de doc tren bbox.
         draw_label_with_background(
             frame,
             display_status,
@@ -1470,7 +1859,7 @@ def draw_person_overlay(
             text_drawer=text_drawer,
         )
 
-    if SETTINGS.demo.draw_debug and not handrail_debug_only:
+    if SETTINGS.demo.draw_debug and all_debug_focus:
         identity_lines = _build_identity_overlay_lines(analysis)
         identity_box_width, _identity_box_height = _measure_vietnamese_lines(
             identity_lines,
@@ -1512,7 +1901,7 @@ def draw_person_overlay(
             text_drawer=text_drawer,
         )
 
-    if SETTINGS.demo.draw_debug and features is not None and not handrail_debug_only:
+    if SETTINGS.demo.draw_debug and features is not None and all_debug_focus:
         draw_feet_comparison_debug(
             frame,
             box,
@@ -1521,12 +1910,119 @@ def draw_person_overlay(
             text_drawer=text_drawer,
         )
 
-    if handrail_debug_only and features is not None:
+    if handrail_focus and features is not None:
+        # DEBUG: Focus mode chi loc thong tin debug duoc ve, khong doi phan tich o analyzer.
         _draw_handrail_debug_only_overlay(
             frame,
             box,
             features,
             analysis,
+            text_drawer=text_drawer,
+        )
+    elif focus_mode == "carry":
+        if features is not None:
+            _draw_handrail_arm_segments(frame, features)
+        _draw_compact_focus_overlay(
+            frame,
+            box,
+            build_carry_debug_lines(analysis),
+            text_drawer=text_drawer,
+        )
+    elif focus_mode == "lane":
+        if lane_point is not None:
+            _draw_feet_debug_marker(
+                frame,
+                lane_point,
+                (0, 255, 255),
+                "P_LANE",
+                text_drawer=text_drawer,
+                label_dx=10,
+                label_dy=-24,
+            )
+        _draw_compact_focus_overlay(
+            frame,
+            box,
+            build_lane_debug_lines(analysis),
+            text_drawer=text_drawer,
+        )
+    elif focus_mode == "backward":
+        if features is not None:
+            _draw_feet_debug_marker(
+                frame,
+                features.get("monitor_point_hip"),
+                (0, 220, 255),
+                "HIP_DIR",
+                text_drawer=text_drawer,
+                label_dx=10,
+                label_dy=-20,
+            )
+            _draw_feet_debug_marker(
+                frame,
+                features.get("monitor_point_shoulder"),
+                (255, 220, 0),
+                "SH_DIR",
+                text_drawer=text_drawer,
+                label_dx=10,
+                label_dy=10,
+            )
+        _draw_compact_focus_overlay(
+            frame,
+            box,
+            build_backward_debug_lines(analysis),
+            text_drawer=text_drawer,
+        )
+    elif focus_mode == "standing":
+        if motion_point is not None:
+            _draw_feet_debug_marker(
+                frame,
+                motion_point,
+                (255, 255, 0),
+                "MOTION",
+                text_drawer=text_drawer,
+                label_dx=10,
+                label_dy=-24,
+            )
+        _draw_compact_focus_overlay(
+            frame,
+            box,
+            build_standing_debug_lines(analysis),
+            text_drawer=text_drawer,
+        )
+    elif focus_mode == "two_step":
+        if features is not None:
+            draw_feet_comparison_debug(
+                frame,
+                box,
+                features,
+                analysis=analysis,
+                text_drawer=text_drawer,
+            )
+        _draw_compact_focus_overlay(
+            frame,
+            box,
+            build_two_step_debug_lines(analysis),
+            text_drawer=text_drawer,
+        )
+    elif focus_mode == "feet":
+        if features is not None:
+            draw_feet_comparison_debug(
+                frame,
+                box,
+                features,
+                analysis=analysis,
+                text_drawer=text_drawer,
+            )
+        _draw_compact_focus_overlay(
+            frame,
+            box,
+            build_feet_debug_lines(analysis),
+            text_drawer=text_drawer,
+        )
+    elif focus_mode == "identity":
+        _draw_compact_focus_overlay(
+            frame,
+            box,
+            build_identity_debug_lines(analysis),
             text_drawer=text_drawer,
         )
     # Skeleton nay chi de quan sat pose tay, khong lam thay doi ket qua phan tich.
@@ -1565,7 +2061,7 @@ def draw_person_overlay(
     if (
         SETTINGS.demo.enable_debug_overlay
         and SETTINGS.demo.enable_verbose_person_debug
-        and not handrail_debug_only
+        and all_debug_focus
         and analysis.get(
         "carry_type",
         "NONE",
@@ -1584,9 +2080,9 @@ def draw_person_overlay(
     if (
         SETTINGS.demo.enable_debug_overlay
         and SETTINGS.demo.enable_verbose_person_debug
-        and not handrail_debug_only
+        and all_debug_focus
     ):
-        debug_lines = build_debug_lines(analysis)
+        debug_lines = build_debug_lines(analysis, focus_mode)
         debug_font = cv2.FONT_HERSHEY_SIMPLEX
         debug_font_scale = 0.5
         debug_thickness = 2
@@ -1624,7 +2120,7 @@ def draw_person_overlay(
 
 
 
-def _build_active_violation_lines(active_alert_flags):
+def _build_active_violation_lines(active_alert_flags: dict[str, int]) -> list[str]:
     return [
         SETTINGS.violation.display_names[label]
         for label in SETTINGS.violation.display_order
@@ -1632,7 +2128,10 @@ def _build_active_violation_lines(active_alert_flags):
     ]
 
 
-def draw_demo_violation_alerts(frame, active_alert_flags):
+def draw_demo_violation_alerts(
+    frame: FrameArray,
+    active_alert_flags: dict[str, int],
+) -> None:
     """Ve badge vi pham lon o demo mode sach.
 
     Args:
@@ -1645,6 +2144,7 @@ def draw_demo_violation_alerts(frame, active_alert_flags):
     Notes:
         Alert nay giu giao dien demo gon trong demo mode khi tat debug overlay.
     """
+    # WARNING: Badge nay chi doc warning da tong hop san, khong tu sinh them vi pham moi.
     lines = _build_active_violation_lines(active_alert_flags)
     if not lines:
         return
@@ -1730,7 +2230,7 @@ def draw_demo_violation_alerts(frame, active_alert_flags):
 
 
 
-def build_debug_lines(analysis):
+def _build_all_debug_lines(analysis: AnalysisLike) -> list[str]:
     """Xay danh sach dong debug tu result dict cua 1 nguoi.
 
     Args:
@@ -1761,6 +2261,16 @@ def build_debug_lines(analysis):
         f"IDENTITY_OUTSIDE_PROOF:{analysis.get('identity_outside_proof', False)}",
         f"IDENTITY_ENTER_CONFIRM_HITS:{analysis.get('identity_enter_confirm_hits', 0)}",
         f"IDENTITY_ENTER_CONFIRM_TARGET:{analysis.get('identity_enter_confirm_target', 0)}",
+        f"OCCLUDED_ENTRY_CANDIDATE_AGE:{analysis.get('occluded_entry_candidate_age_frames', 0)}",
+        f"OCCLUDED_ENTRY_AGE_TARGET:{analysis.get('occluded_entry_age_target', 0)}",
+        f"OCCLUDED_ENTRY_INSIDE_FRAMES:{analysis.get('occluded_entry_inside_frames', 0)}",
+        f"OCCLUDED_ENTRY_INSIDE_TARGET:{analysis.get('occluded_entry_inside_target', 0)}",
+        f"OCCLUDED_ENTRY_MOTION_FRAMES:{analysis.get('occluded_entry_motion_frames', 0)}",
+        f"OCCLUDED_ENTRY_MOTION_TARGET:{analysis.get('occluded_entry_motion_target', 0)}",
+        f"OCCLUDED_ENTRY_BLOCK_REASON:{analysis.get('occluded_entry_block_reason', 'NONE')}",
+        f"OCCLUDED_ENTRY_NEAREST_GHOST_SCORE:{_format_optional_debug_number(analysis.get('occluded_entry_nearest_ghost_score'))}",
+        f"OCCLUDED_ENTRY_NEAREST_ACTIVE_IOU:{_format_optional_debug_number(analysis.get('occluded_entry_nearest_active_iou'))}",
+        f"OCCLUDED_ENTRY_NEAREST_ACTIVE_DISTANCE:{_format_optional_debug_number(analysis.get('occluded_entry_nearest_active_distance'))}",
         f"IDENTITY_DEBUG:{analysis.get('identity_debug', 'NA')}",
         f"RELINK_SCORE:{analysis['relink_score']:.2f}"
         if isinstance(analysis.get("relink_score"), (int, float))
@@ -1778,6 +2288,8 @@ def build_debug_lines(analysis):
         f"HAS_COUNTED_EXIT:{analysis.get('has_counted_exit', False)}",
         f"COUNT_EVENT_REASON:{analysis.get('count_event_reason', 'NO_COUNT_EVENT')}",
         f"TOTAL_ENTERED_COUNT:{analysis.get('total_entered_count', analysis.get('entered_count', 0))}",
+        f"TOTAL_CONFIRMED_ENTERED_COUNT:{analysis.get('total_confirmed_entered_count', 0)}",
+        f"TOTAL_OCCLUDED_ENTERED_COUNT:{analysis.get('total_occluded_entered_count', 0)}",
         f"TOTAL_EXITED_COUNT:{analysis.get('total_exited_count', analysis.get('exited_count', 0))}",
         f"ENTERED_COUNT:{analysis.get('entered_count', 0)}",
         f"EXITED_COUNT:{analysis.get('exited_count', 0)}",
@@ -2134,3 +2646,31 @@ def build_debug_lines(analysis):
         ]
     )
     return filtered_lines
+
+
+def build_debug_lines(
+    analysis: AnalysisLike,
+    mode: DebugFocusMode | None = None,
+) -> list[str]:
+    effective_mode = mode or _get_debug_focus_mode()
+    if effective_mode == "none":
+        return []
+    if effective_mode == "all":
+        return _build_all_debug_lines(analysis)
+    if effective_mode == "handrail":
+        return build_handrail_debug_lines(analysis)
+    if effective_mode == "carry":
+        return build_carry_debug_lines(analysis)
+    if effective_mode == "lane":
+        return build_lane_debug_lines(analysis)
+    if effective_mode == "backward":
+        return build_backward_debug_lines(analysis)
+    if effective_mode == "standing":
+        return build_standing_debug_lines(analysis)
+    if effective_mode == "two_step":
+        return build_two_step_debug_lines(analysis)
+    if effective_mode == "feet":
+        return build_feet_debug_lines(analysis)
+    if effective_mode == "identity":
+        return build_identity_debug_lines(analysis)
+    return _build_all_debug_lines(analysis)

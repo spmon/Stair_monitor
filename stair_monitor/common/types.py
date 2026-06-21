@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 from numpy.typing import NDArray
 from typing import Literal, TypeAlias, TypedDict
@@ -9,8 +11,11 @@ BBox: TypeAlias = tuple[int, int, int, int]
 FloatPoint: TypeAlias = tuple[float, float]
 ColorBGR: TypeAlias = tuple[int, int, int]
 Numeric: TypeAlias = int | float
+FrameArray: TypeAlias = NDArray[np.uint8]
 KeypointsArray: TypeAlias = NDArray[np.float32] | NDArray[np.float64]
 BBoxArray: TypeAlias = NDArray[np.float32] | NDArray[np.float64]
+PointList: TypeAlias = Sequence[Point]
+LinePoints: TypeAlias = PointList | NDArray[np.int32] | NDArray[np.float32] | NDArray[np.float64]
 PersonUID: TypeAlias = int
 AnalysisSubjectID: TypeAlias = int | str
 Direction: TypeAlias = Literal["UP", "DOWN", "IDLE", "ANALYZING", "UNKNOWN"]
@@ -58,7 +63,7 @@ PersonSessionStatusLabel: TypeAlias = Literal[
 ]
 PersonSessionLifecycleLabel: TypeAlias = Literal[
     "CANDIDATE_NO_FEET",
-    "CANDIDATE_INSIDE_NO_OUTSIDE_PROOF",
+    "OCCLUDED_ENTRY_CANDIDATE",
     "CANDIDATE_WAIT_ENTER",
     "CANDIDATE_OUTSIDE",
     "UNASSIGNED_INSIDE_CANDIDATE",
@@ -71,6 +76,7 @@ PersonSessionLifecycleLabel: TypeAlias = Literal[
 IdentityEntryReasonLabel: TypeAlias = Literal[
     "NONE",
     "CONFIRMED_ENTER",
+    "OCCLUDED_ENTRY",
 ]
 ReLinkStateLabel: TypeAlias = Literal[
     "NONE",
@@ -83,6 +89,7 @@ ReLinkStateLabel: TypeAlias = Literal[
 CountEventReasonLabel: TypeAlias = Literal[
     "NO_COUNT_EVENT",
     "ENTER_COUNTED_BY_FEET",
+    "COUNT_ENTER_OCCLUDED",
     "EXIT_COUNTED_BY_FEET",
     "ENTER_ALREADY_COUNTED",
     "EXIT_ALREADY_COUNTED",
@@ -90,9 +97,23 @@ CountEventReasonLabel: TypeAlias = Literal[
     "BBOX_OUTSIDE_IGNORED_NO_EXIT_COUNT",
     "RELINK_NO_RECOUNT",
 ]
+DebugFocusMode: TypeAlias = Literal[
+    "all",
+    "none",
+    "handrail",
+    "carry",
+    "lane",
+    "backward",
+    "standing",
+    "two_step",
+    "feet",
+    "identity",
+]
+TextAnchor: TypeAlias = Literal["left", "right"]
 DebugInfoDict: TypeAlias = dict[str, object]
 KeypointValidDict: TypeAlias = dict[str, bool]
 PerfStats: TypeAlias = dict[str, float]
+WarningList: TypeAlias = list[str]
 
 JsonPrimitive: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]
@@ -228,6 +249,8 @@ class AnalysisResult(TypedDict, total=False):
     relink_second_candidate: str
     relink_state: ReLinkStateLabel
     total_entered_count: int
+    total_confirmed_entered_count: int
+    total_occluded_entered_count: int
     total_exited_count: int
     entered_count: int
     exited_count: int
@@ -239,6 +262,16 @@ class AnalysisResult(TypedDict, total=False):
     has_counted_enter: bool
     has_counted_exit: bool
     count_event_reason: CountEventReasonLabel
+    occluded_entry_candidate_age_frames: int
+    occluded_entry_age_target: int
+    occluded_entry_inside_frames: int
+    occluded_entry_inside_target: int
+    occluded_entry_motion_frames: int
+    occluded_entry_motion_target: int
+    occluded_entry_block_reason: str
+    occluded_entry_nearest_ghost_score: float | None
+    occluded_entry_nearest_active_iou: float | None
+    occluded_entry_nearest_active_distance: float | None
     dy: Numeric | None
     direction_dy: Numeric | None
     lane_v: Numeric | None
@@ -464,3 +497,6 @@ class AnalysisResult(TypedDict, total=False):
     warnings: list[str]
     perf: PerfStats | None
     debug_info: DebugInfoDict | None
+
+
+AnalysisLike: TypeAlias = AnalysisResult | DebugInfoDict

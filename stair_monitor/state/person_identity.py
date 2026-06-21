@@ -33,6 +33,7 @@ TRUSTED_FEET_SOURCES = frozenset(
         "VIRTUAL_FROM_SHOULDER_HIP",
     }
 )
+OCCLUDED_ENTRY_MIN_MOTION_DELTA_PX = 4.0
 
 
 @dataclass(slots=True)
@@ -66,6 +67,18 @@ class IdentityUpdateResult:
     has_counted_enter: bool
     has_counted_exit: bool
     count_event_reason: CountEventReasonLabel
+    total_confirmed_entered_count: int
+    total_occluded_entered_count: int
+    occluded_entry_candidate_age_frames: int
+    occluded_entry_age_target: int
+    occluded_entry_inside_frames: int
+    occluded_entry_inside_target: int
+    occluded_entry_motion_frames: int
+    occluded_entry_motion_target: int
+    occluded_entry_block_reason: str
+    occluded_entry_nearest_ghost_score: float | None
+    occluded_entry_nearest_active_iou: float | None
+    occluded_entry_nearest_active_distance: float | None
 
 
 @dataclass(slots=True)
@@ -82,6 +95,8 @@ class CandidateSession:
     last_trusted_feet_source: str
     has_trusted_feet_outside: bool = False
     entry_confirm_hits: int = 0
+    occluded_inside_frames: int = 0
+    occluded_motion_frames: int = 0
     last_gate_reason: str = "WAIT_TRUSTED_FEET_ENTER"
     relink_confirm_hits: int = 0
     pending_relink_person_uid: PersonUID | None = None
@@ -155,6 +170,20 @@ class PendingReLink:
     state: ReLinkStateLabel
 
 
+@dataclass(slots=True)
+class OccludedEntryStatus:
+    candidate_age_frames: int
+    age_target: int
+    inside_frames: int
+    inside_target: int
+    motion_frames: int
+    motion_target: int
+    block_reason: str = "NONE"
+    nearest_ghost_score: float | None = None
+    nearest_active_iou: float | None = None
+    nearest_active_distance: float | None = None
+
+
 class PersonIdentityManager:
     """Quan ly stable person_id duoc gate boi trusted feet cho Windows/demo."""
 
@@ -169,6 +198,8 @@ class PersonIdentityManager:
         self.seen_person_uids_this_frame: set[PersonUID] = set()
         self.seen_yolo_ids_this_frame: set[int] = set()
         self.total_entered_count = 0
+        self.total_confirmed_entered_count = 0
+        self.total_occluded_entered_count = 0
         self.total_exited_count = 0
 
         self.center_line: list[Point] = []
@@ -244,6 +275,31 @@ class PersonIdentityManager:
             return None
         x1, y1, x2, y2 = bbox
         return ((x1 + x2) // 2, (y1 + y2) // 2)
+
+    @staticmethod
+    def _get_bbox_iou(
+        bbox_a: BBox | None,
+        bbox_b: BBox | None,
+    ) -> float | None:
+        if bbox_a is None or bbox_b is None:
+            return None
+
+        inter_x1 = max(bbox_a[0], bbox_b[0])
+        inter_y1 = max(bbox_a[1], bbox_b[1])
+        inter_x2 = min(bbox_a[2], bbox_b[2])
+        inter_y2 = min(bbox_a[3], bbox_b[3])
+        inter_width = max(0, inter_x2 - inter_x1)
+        inter_height = max(0, inter_y2 - inter_y1)
+        inter_area = inter_width * inter_height
+        if inter_area <= 0:
+            return 0.0
+
+        area_a = max(0, bbox_a[2] - bbox_a[0]) * max(0, bbox_a[3] - bbox_a[1])
+        area_b = max(0, bbox_b[2] - bbox_b[0]) * max(0, bbox_b[3] - bbox_b[1])
+        union_area = area_a + area_b - inter_area
+        if union_area <= 0:
+            return 0.0
+        return inter_area / union_area
 
     @staticmethod
     def _get_bbox_size_ratio_diff(
@@ -376,6 +432,52 @@ class PersonIdentityManager:
         candidate.entry_confirm_hits = 0
 
     @staticmethod
+    def _update_candidate_occluded_state(
+        candidate: CandidateSession,
+        trusted_feet_point: Point | None,
+        trusted_inside: bool | None,
+    ) -> None:
+        if trusted_feet_point is not None and trusted_inside is True:
+            candidate.occluded_inside_frames += 1
+        else:
+            candidate.occluded_inside_frames = 0
+
+        motion_distance = PersonIdentityManager._distance(
+            candidate.previous_anchor_point,
+            candidate.last_anchor_point,
+        )
+        if (
+            motion_distance is not None
+            and motion_distance >= OCCLUDED_ENTRY_MIN_MOTION_DELTA_PX
+        ):
+            candidate.occluded_motion_frames += 1
+
+    def _get_candidate_age_frames(self, candidate: CandidateSession) -> int:
+        return max(1, self.current_frame_index - candidate.first_seen_frame + 1)
+
+    def _build_occluded_entry_status(
+        self,
+        candidate: CandidateSession,
+        *,
+        block_reason: str = "NONE",
+        nearest_ghost_score: float | None = None,
+        nearest_active_iou: float | None = None,
+        nearest_active_distance: float | None = None,
+    ) -> OccludedEntryStatus:
+        return OccludedEntryStatus(
+            candidate_age_frames=self._get_candidate_age_frames(candidate),
+            age_target=max(1, SETTINGS.identity.occluded_entry_min_age_frames),
+            inside_frames=candidate.occluded_inside_frames,
+            inside_target=max(1, SETTINGS.identity.occluded_entry_min_inside_frames),
+            motion_frames=candidate.occluded_motion_frames,
+            motion_target=max(1, SETTINGS.identity.occluded_entry_min_motion_frames),
+            block_reason=block_reason,
+            nearest_ghost_score=nearest_ghost_score,
+            nearest_active_iou=nearest_active_iou,
+            nearest_active_distance=nearest_active_distance,
+        )
+
+    @staticmethod
     def _get_candidate_session_lifecycle(
         candidate: CandidateSession,
         trusted_feet_point: Point | None,
@@ -389,9 +491,7 @@ class PersonIdentityManager:
             return "CANDIDATE_OUTSIDE"
         if trusted_inside is True:
             if not candidate.has_trusted_feet_outside:
-                if not allow_new_person:
-                    return "UNASSIGNED_INSIDE_CANDIDATE"
-                return "CANDIDATE_INSIDE_NO_OUTSIDE_PROOF"
+                return "OCCLUDED_ENTRY_CANDIDATE"
             if not allow_new_person:
                 return "UNASSIGNED_INSIDE_CANDIDATE"
             return "CANDIDATE_WAIT_ENTER"
@@ -504,6 +604,78 @@ class PersonIdentityManager:
             return None
         return bool(is_inside_stairs(self.stairs_poly, bbox_center))
 
+    @staticmethod
+    def _get_relink_block_reason(decision: ReLinkDecision) -> str:
+        if decision.state == "RELINK_WAIT_MORE_FRAMES":
+            return "LOST_GHOST_NEARBY"
+        if decision.state == "RELINK_REJECTED_AMBIGUOUS":
+            return "LOST_GHOST_AMBIGUOUS"
+        if decision.state == "RELINK_REJECTED_ORDER_CONFLICT":
+            return "LOST_GHOST_ORDER_CONFLICT"
+        return "LOST_GHOST_NEARBY"
+
+    @staticmethod
+    def _format_occluded_log_metric(value: float | None) -> str:
+        if value is None:
+            return "NA"
+        return f"{value:.2f}"
+
+    def _get_active_person_overlap_status(
+        self,
+        candidate: CandidateSession,
+        bbox: BBox | None,
+    ) -> tuple[float | None, float | None, bool]:
+        nearest_iou: float | None = None
+        nearest_distance: float | None = None
+        if not SETTINGS.identity.occluded_entry_block_if_near_active_person:
+            return nearest_iou, nearest_distance, False
+
+        candidate_center = (
+            candidate.last_anchor_point
+            or candidate.last_bbox_center
+            or self._get_bbox_center(bbox)
+        )
+        iou_threshold = max(
+            0.0,
+            float(SETTINGS.identity.occluded_entry_near_active_iou_threshold),
+        )
+        distance_threshold = max(
+            0.0,
+            float(SETTINGS.identity.occluded_entry_near_active_distance_px),
+        )
+        block_overlap = False
+
+        for session in self.person_sessions.values():
+            if session.status != "ACTIVE" or session.lifecycle_state != "ACTIVE_INSIDE":
+                continue
+
+            current_iou = self._get_bbox_iou(bbox, session.last_bbox)
+            if current_iou is not None and (
+                nearest_iou is None or current_iou > nearest_iou
+            ):
+                nearest_iou = current_iou
+
+            other_center = (
+                session.last_anchor_point
+                or session.last_bbox_center
+                or self._get_bbox_center(session.last_bbox)
+            )
+            current_distance = self._distance(candidate_center, other_center)
+            if current_distance is not None and (
+                nearest_distance is None or current_distance < nearest_distance
+            ):
+                nearest_distance = current_distance
+
+            iou_blocked = current_iou is not None and current_iou >= iou_threshold
+            distance_blocked = (
+                current_distance is not None
+                and current_distance <= distance_threshold
+            )
+            if iou_blocked or distance_blocked:
+                block_overlap = True
+
+        return nearest_iou, nearest_distance, block_overlap
+
     def _set_session_count_event_reason(
         self,
         session: PersonSession,
@@ -530,13 +702,28 @@ class PersonIdentityManager:
 
         session.has_counted_enter = True
         self.total_entered_count += 1
+        if session.entry_reason == "OCCLUDED_ENTRY":
+            self.total_occluded_entered_count += 1
+            return self._set_session_count_event_reason(
+                session,
+                "COUNT_ENTER_OCCLUDED",
+                log_message=(
+                    "COUNT_ENTER_OCCLUDED "
+                    f"person_id={self._format_person_uid(session.person_uid)} "
+                    f"total_entered={self.total_entered_count} "
+                    f"total_occluded_entered={self.total_occluded_entered_count}"
+                ),
+            )
+
+        self.total_confirmed_entered_count += 1
         return self._set_session_count_event_reason(
             session,
             "ENTER_COUNTED_BY_FEET",
             log_message=(
                 "COUNT_ENTER "
                 f"person_id={self._format_person_uid(session.person_uid)} "
-                f"total_entered={self.total_entered_count}"
+                f"total_entered={self.total_entered_count} "
+                f"total_confirmed_entered={self.total_confirmed_entered_count}"
             ),
         )
 
@@ -615,6 +802,7 @@ class PersonIdentityManager:
         has_counted_exit: bool = False,
         count_event_reason: CountEventReasonLabel = "NO_COUNT_EVENT",
         merged_from_analysis_subject_id: str = "",
+        occluded_entry_status: OccludedEntryStatus | None = None,
     ) -> IdentityUpdateResult:
         person_uid_label = self._format_person_uid(person_uid)
         candidate_subject_id = self._format_candidate_analysis_subject_id(yolo_track_id)
@@ -623,6 +811,18 @@ class PersonIdentityManager:
             person_uid_label
             if person_uid_label
             else self._format_candidate_analysis_label(yolo_track_id)
+        )
+        effective_occluded_status = (
+            occluded_entry_status
+            if occluded_entry_status is not None
+            else OccludedEntryStatus(
+                candidate_age_frames=0,
+                age_target=max(1, SETTINGS.identity.occluded_entry_min_age_frames),
+                inside_frames=0,
+                inside_target=max(1, SETTINGS.identity.occluded_entry_min_inside_frames),
+                motion_frames=0,
+                motion_target=max(1, SETTINGS.identity.occluded_entry_min_motion_frames),
+            )
         )
         return IdentityUpdateResult(
             has_active_person_id=has_active_person_id,
@@ -654,6 +854,18 @@ class PersonIdentityManager:
             has_counted_enter=has_counted_enter,
             has_counted_exit=has_counted_exit,
             count_event_reason=count_event_reason,
+            total_confirmed_entered_count=self.total_confirmed_entered_count,
+            total_occluded_entered_count=self.total_occluded_entered_count,
+            occluded_entry_candidate_age_frames=effective_occluded_status.candidate_age_frames,
+            occluded_entry_age_target=effective_occluded_status.age_target,
+            occluded_entry_inside_frames=effective_occluded_status.inside_frames,
+            occluded_entry_inside_target=effective_occluded_status.inside_target,
+            occluded_entry_motion_frames=effective_occluded_status.motion_frames,
+            occluded_entry_motion_target=effective_occluded_status.motion_target,
+            occluded_entry_block_reason=effective_occluded_status.block_reason,
+            occluded_entry_nearest_ghost_score=effective_occluded_status.nearest_ghost_score,
+            occluded_entry_nearest_active_iou=effective_occluded_status.nearest_active_iou,
+            occluded_entry_nearest_active_distance=effective_occluded_status.nearest_active_distance,
         )
 
     def _update_person_session_detection(
@@ -703,6 +915,7 @@ class PersonIdentityManager:
         feet_reason: str,
         gate_reason: str,
         inside_test: str,
+        occluded_entry_status: OccludedEntryStatus | None = None,
     ) -> IdentityUpdateResult:
         return self._build_identity_result(
             has_active_person_id=False,
@@ -727,12 +940,15 @@ class PersonIdentityManager:
             ),
             relink_score=None,
             relink_frame_gap=0,
+            occluded_entry_status=occluded_entry_status,
         )
 
     def _promote_candidate(
         self,
         candidate: CandidateSession,
         features: PoseFeatures,
+        *,
+        entry_reason: IdentityEntryReasonLabel,
     ) -> PersonSession:
         person_uid = self.next_person_uid
         self.next_person_uid += 1
@@ -760,7 +976,7 @@ class PersonIdentityManager:
             last_identity_status="NEW",
             last_identity_debug=f"ENTER {self._format_person_uid(person_uid)}",
             last_gate_reason=candidate.last_gate_reason,
-            entry_reason="CONFIRMED_ENTER",
+            entry_reason=entry_reason,
             has_counted_enter=False,
             has_counted_exit=False,
             last_count_event_reason="NO_COUNT_EVENT",
@@ -768,15 +984,68 @@ class PersonIdentityManager:
         self.person_sessions[person_uid] = session
         self.yolo_to_person[candidate.current_yolo_track_id] = person_uid
         self._count_session_enter(session)
-        self._log_event(
-            "PERSON_ENTERED "
-            f"person_id={self._format_person_uid(person_uid)} "
-            f"yolo_id={candidate.current_yolo_track_id}"
-        )
+        if entry_reason == "OCCLUDED_ENTRY":
+            self._log_event(
+                "PERSON_CREATED_OCCLUDED_ENTRY "
+                f"person_id={self._format_person_uid(person_uid)} "
+                f"yolo_id={candidate.current_yolo_track_id} "
+                f"candidate_age={self._get_candidate_age_frames(candidate)} "
+                f"inside_count={candidate.occluded_inside_frames} "
+                f"motion_count={candidate.occluded_motion_frames} "
+                f"feet_source={candidate.last_trusted_feet_source}"
+            )
+        else:
+            self._log_event(
+                "PERSON_ENTERED "
+                f"person_id={self._format_person_uid(person_uid)} "
+                f"yolo_id={candidate.current_yolo_track_id}"
+            )
         self.pending_relink_by_yolo_id.pop(candidate.current_yolo_track_id, None)
         self._clear_new_person_guard_log(candidate.current_yolo_track_id)
         self.candidate_sessions.pop(candidate.current_yolo_track_id, None)
         return session
+
+    def _build_promoted_candidate_result(
+        self,
+        session: PersonSession,
+        yolo_track_id: int,
+        trusted_feet_source: str,
+        inside_test: str,
+        *,
+        identity_outside_proof: bool,
+        identity_enter_confirm_hits: int,
+        identity_enter_confirm_target: int,
+        merge_from_candidate_history: bool,
+        occluded_entry_status: OccludedEntryStatus | None = None,
+    ) -> IdentityUpdateResult:
+        return self._build_identity_result(
+            has_active_person_id=True,
+            person_uid=session.person_uid,
+            yolo_track_id=yolo_track_id,
+            previous_yolo_track_id=None,
+            identity_status="NEW",
+            session_status="ACTIVE",
+            session_lifecycle="ACTIVE_INSIDE",
+            identity_debug=f"{self._format_person_uid(session.person_uid)} / YOLO {yolo_track_id}",
+            identity_feet_source=trusted_feet_source,
+            identity_gate_reason=session.last_gate_reason,
+            relink_score=None,
+            relink_frame_gap=0,
+            identity_inside_test=inside_test,
+            identity_entry_reason=session.entry_reason,
+            identity_outside_proof=identity_outside_proof,
+            identity_enter_confirm_hits=identity_enter_confirm_hits,
+            identity_enter_confirm_target=identity_enter_confirm_target,
+            has_counted_enter=session.has_counted_enter,
+            has_counted_exit=session.has_counted_exit,
+            count_event_reason=session.last_count_event_reason,
+            merged_from_analysis_subject_id=(
+                self._format_candidate_analysis_subject_id(yolo_track_id)
+                if merge_from_candidate_history
+                else ""
+            ),
+            occluded_entry_status=occluded_entry_status,
+        )
 
     def _reset_candidate_relink_state(self, candidate: CandidateSession) -> None:
         candidate.relink_confirm_hits = 0
@@ -1343,7 +1612,7 @@ class PersonIdentityManager:
             session_lifecycle: PersonSessionLifecycleLabel = "TEMP_REID_CANDIDATE"
             identity_debug = f"TEMP YOLO {yolo_track_id}"
             gate_reason = (
-                "BLOCKED_BY_GHOST_CANDIDATE"
+                "OCCLUDED_ENTRY_BLOCKED_GHOST"
                 if is_inside_without_outside_proof
                 else (
                     "RELINK_WAIT_MORE_FRAMES "
@@ -1355,13 +1624,43 @@ class PersonIdentityManager:
             session_lifecycle = "AMBIGUOUS_REID"
             identity_debug = f"AMBIGUOUS YOLO {yolo_track_id}"
             gate_reason = (
-                "BLOCKED_BY_AMBIGUOUS_REID"
+                "OCCLUDED_ENTRY_BLOCKED_GHOST"
                 if is_inside_without_outside_proof
                 else decision.state
             )
 
         if is_inside_without_outside_proof:
+            occluded_block_reason = self._get_relink_block_reason(decision)
             candidate.last_gate_reason = gate_reason
+            return self._build_identity_result(
+                has_active_person_id=False,
+                person_uid=None,
+                yolo_track_id=yolo_track_id,
+                previous_yolo_track_id=None,
+                identity_status="CANDIDATE",
+                session_status="CANDIDATE",
+                session_lifecycle="OCCLUDED_ENTRY_CANDIDATE",
+                identity_debug=f"YOLO {yolo_track_id}",
+                identity_feet_source=feet_source,
+                identity_feet_reason=feet_reason,
+                identity_gate_reason=gate_reason,
+                identity_inside_test=inside_test,
+                identity_entry_reason="NONE",
+                identity_outside_proof=False,
+                identity_enter_confirm_hits=0,
+                identity_enter_confirm_target=0,
+                relink_score=relink_score,
+                relink_frame_gap=relink_frame_gap,
+                relink_score_gap=decision.score_gap,
+                relink_best_candidate=best_label,
+                relink_second_candidate=second_label,
+                relink_state=decision.state,
+                occluded_entry_status=self._build_occluded_entry_status(
+                    candidate,
+                    block_reason=occluded_block_reason,
+                    nearest_ghost_score=relink_score,
+                ),
+            )
 
         return self._build_identity_result(
             has_active_person_id=False,
@@ -1655,6 +1954,64 @@ class PersonIdentityManager:
             count_event_reason=count_event_reason,
         )
 
+    def _format_occluded_entry_log_detail(
+        self,
+        status: OccludedEntryStatus,
+        feet_source: str,
+    ) -> str:
+        detail_parts = [
+            f"frame_idx={self.current_frame_index}",
+            f"candidate_age={status.candidate_age_frames}",
+            f"inside_count={status.inside_frames}",
+            f"motion_count={status.motion_frames}",
+            f"feet_source={feet_source}",
+            f"nearest_ghost_score={self._format_occluded_log_metric(status.nearest_ghost_score)}",
+            f"nearest_active_iou={self._format_occluded_log_metric(status.nearest_active_iou)}",
+            f"nearest_active_distance={self._format_occluded_log_metric(status.nearest_active_distance)}",
+            f"reason={status.block_reason}",
+        ]
+        return " ".join(detail_parts)
+
+    def _assess_occluded_entry_candidate(
+        self,
+        candidate: CandidateSession,
+        bbox: BBox | None,
+        trusted_feet_point: Point | None,
+    ) -> OccludedEntryStatus:
+        nearest_active_iou, nearest_active_distance, block_active_overlap = (
+            self._get_active_person_overlap_status(candidate, bbox)
+        )
+        status = self._build_occluded_entry_status(
+            candidate,
+            nearest_active_iou=nearest_active_iou,
+            nearest_active_distance=nearest_active_distance,
+        )
+
+        if SETTINGS.identity.occluded_entry_require_trusted_feet and (
+            trusted_feet_point is None
+            or not self._is_trusted_feet_source(candidate.last_trusted_feet_source)
+        ):
+            status.block_reason = "NO_TRUSTED_FEET"
+            return status
+
+        if block_active_overlap:
+            status.block_reason = "ACTIVE_OVERLAP"
+            return status
+
+        if status.candidate_age_frames < status.age_target:
+            status.block_reason = "TOO_YOUNG"
+            return status
+
+        if status.inside_frames < status.inside_target:
+            status.block_reason = "INSIDE_NOT_STABLE"
+            return status
+
+        if status.motion_frames < status.motion_target:
+            status.block_reason = "NOT_ENOUGH_MOTION"
+            return status
+
+        return status
+
     def _update_candidate_session(
         self,
         yolo_track_id: int,
@@ -1683,6 +2040,11 @@ class PersonIdentityManager:
             trusted_feet_point,
             trusted_inside,
         )
+        self._update_candidate_occluded_state(
+            candidate,
+            trusted_feet_point,
+            trusted_inside,
+        )
         candidate_lifecycle = self._get_candidate_session_lifecycle(
             candidate,
             trusted_feet_point,
@@ -1692,6 +2054,9 @@ class PersonIdentityManager:
         inside_test = self._get_candidate_inside_test(
             trusted_feet_point,
             trusted_inside,
+        )
+        is_inside_without_outside_proof = (
+            trusted_inside is True and not candidate.has_trusted_feet_outside
         )
 
         relink_decision = self._evaluate_relink_decision(
@@ -1719,7 +2084,10 @@ class PersonIdentityManager:
                 if relink_result is not None:
                     self.candidate_sessions.pop(yolo_track_id, None)
                     return relink_result
-            else:
+            elif (
+                not is_inside_without_outside_proof
+                or SETTINGS.identity.occluded_entry_block_if_any_lost_inside_ghost
+            ):
                 if blocked_new_person_reason is None:
                     best_candidate = relink_decision.best_candidate
                     blocked_target = (
@@ -1736,6 +2104,24 @@ class PersonIdentityManager:
                         "NEW_PERSON_BLOCKED_GHOST_MATCH",
                         f"target={blocked_target or 'NA'}",
                     )
+                if is_inside_without_outside_proof:
+                    ghost_status = self._build_occluded_entry_status(
+                        candidate,
+                        block_reason=self._get_relink_block_reason(relink_decision),
+                        nearest_ghost_score=(
+                            relink_decision.best_candidate.score
+                            if relink_decision.best_candidate is not None
+                            else None
+                        ),
+                    )
+                    self._log_new_person_guard(
+                        yolo_track_id,
+                        "OCCLUDED_ENTRY_BLOCKED_GHOST",
+                        self._format_occluded_entry_log_detail(
+                            ghost_status,
+                            candidate_feet_source,
+                        ),
+                    )
                 return self._build_pending_relink_result(
                     yolo_track_id,
                     candidate_feet_source,
@@ -1744,31 +2130,134 @@ class PersonIdentityManager:
                     candidate,
                     relink_decision,
                 )
+            else:
+                self._reset_candidate_relink_state(candidate)
 
         if trusted_inside is True:
             if not candidate.has_trusted_feet_outside:
+                base_occluded_status = self._build_occluded_entry_status(candidate)
                 if not allow_new_person:
-                    if blocked_new_person_reason is not None:
-                        blocked_target = (
-                            self._format_person_uid(blocked_target_person_uid)
-                            if blocked_target_person_uid is not None
-                            else ""
-                        )
-                        detail = (
-                            f"target={blocked_target}"
-                            if blocked_target
-                            else ""
-                        )
+                    blocked_target = (
+                        self._format_person_uid(blocked_target_person_uid)
+                        if blocked_target_person_uid is not None
+                        else ""
+                    )
+                    if blocked_new_person_reason == "NEW_PERSON_BLOCKED_PENDING_RELINK":
+                        base_occluded_status.block_reason = "PENDING_RELINK"
+                        candidate.last_gate_reason = "OCCLUDED_ENTRY_WAIT"
                         self._log_new_person_guard(
                             yolo_track_id,
-                            blocked_new_person_reason,
+                            "OCCLUDED_ENTRY_WAIT",
+                            self._format_occluded_entry_log_detail(
+                                base_occluded_status,
+                                candidate_feet_source,
+                            ),
+                        )
+                    else:
+                        base_occluded_status.block_reason = "LOST_GHOST_NEARBY"
+                        candidate.last_gate_reason = "OCCLUDED_ENTRY_BLOCKED_GHOST"
+                        detail = self._format_occluded_entry_log_detail(
+                            base_occluded_status,
+                            candidate_feet_source,
+                        )
+                        if blocked_target:
+                            detail = f"{detail} target={blocked_target}"
+                        self._log_new_person_guard(
+                            yolo_track_id,
+                            "OCCLUDED_ENTRY_BLOCKED_GHOST",
                             detail,
                         )
-                        candidate.last_gate_reason = self._normalize_candidate_gate_reason(
-                            blocked_new_person_reason
-                        )
+                    return self._create_candidate_result(
+                        yolo_track_id,
+                        candidate,
+                        candidate_lifecycle,
+                        candidate_feet_source,
+                        candidate_feet_reason,
+                        candidate.last_gate_reason,
+                        inside_test,
+                        occluded_entry_status=base_occluded_status,
+                    )
+
+                if not SETTINGS.identity.allow_occluded_entry_promotion:
+                    base_occluded_status.block_reason = "OCCLUDED_ENTRY_DISABLED"
+                    candidate.last_gate_reason = "OCCLUDED_ENTRY_WAIT"
+                    return self._create_candidate_result(
+                        yolo_track_id,
+                        candidate,
+                        candidate_lifecycle,
+                        candidate_feet_source,
+                        candidate_feet_reason,
+                        candidate.last_gate_reason,
+                        inside_test,
+                        occluded_entry_status=base_occluded_status,
+                    )
+
+                occluded_status = self._assess_occluded_entry_candidate(
+                    candidate,
+                    bbox,
+                    trusted_feet_point,
+                )
+                if occluded_status.block_reason == "NONE":
+                    candidate.last_gate_reason = "OCCLUDED_ENTRY_PROMOTED"
+                    session = self._promote_candidate(
+                        candidate,
+                        features,
+                        entry_reason="OCCLUDED_ENTRY",
+                    )
+                    self.seen_person_uids_this_frame.add(session.person_uid)
+                    return self._build_promoted_candidate_result(
+                        session,
+                        yolo_track_id,
+                        trusted_feet_source,
+                        inside_test,
+                        identity_outside_proof=False,
+                        identity_enter_confirm_hits=0,
+                        identity_enter_confirm_target=0,
+                        merge_from_candidate_history=False,
+                        occluded_entry_status=occluded_status,
+                    )
+
+                if occluded_status.block_reason == "ACTIVE_OVERLAP":
+                    candidate.last_gate_reason = "OCCLUDED_ENTRY_BLOCKED_ACTIVE_OVERLAP"
+                    self._log_new_person_guard(
+                        yolo_track_id,
+                        "OCCLUDED_ENTRY_BLOCKED_ACTIVE_OVERLAP",
+                        self._format_occluded_entry_log_detail(
+                            occluded_status,
+                            candidate_feet_source,
+                        ),
+                    )
+                elif occluded_status.block_reason == "NO_TRUSTED_FEET":
+                    candidate.last_gate_reason = "OCCLUDED_ENTRY_BLOCKED_NO_FEET"
+                    self._log_new_person_guard(
+                        yolo_track_id,
+                        "OCCLUDED_ENTRY_BLOCKED_NO_FEET",
+                        self._format_occluded_entry_log_detail(
+                            occluded_status,
+                            candidate_feet_source,
+                        ),
+                    )
+                elif occluded_status.block_reason == "TOO_YOUNG":
+                    candidate.last_gate_reason = "OCCLUDED_ENTRY_WAIT"
+                    self._log_new_person_guard(
+                        yolo_track_id,
+                        "OCCLUDED_ENTRY_BLOCKED_TOO_YOUNG",
+                        self._format_occluded_entry_log_detail(
+                            occluded_status,
+                            candidate_feet_source,
+                        ),
+                    )
                 else:
-                    candidate.last_gate_reason = "NO_OUTSIDE_PROOF"
+                    candidate.last_gate_reason = "OCCLUDED_ENTRY_WAIT"
+                    self._log_new_person_guard(
+                        yolo_track_id,
+                        "OCCLUDED_ENTRY_WAIT",
+                        self._format_occluded_entry_log_detail(
+                            occluded_status,
+                            candidate_feet_source,
+                        ),
+                    )
+
                 return self._create_candidate_result(
                     yolo_track_id,
                     candidate,
@@ -1777,6 +2266,7 @@ class PersonIdentityManager:
                     candidate_feet_reason,
                     candidate.last_gate_reason,
                     inside_test,
+                    occluded_entry_status=occluded_status,
                 )
 
             if not allow_new_person:
@@ -1786,11 +2276,7 @@ class PersonIdentityManager:
                         if blocked_target_person_uid is not None
                         else ""
                     )
-                    detail = (
-                        f"target={blocked_target}"
-                        if blocked_target
-                        else ""
-                    )
+                    detail = f"target={blocked_target}" if blocked_target else ""
                     self._log_new_person_guard(
                         yolo_track_id,
                         blocked_new_person_reason,
@@ -1815,32 +2301,21 @@ class PersonIdentityManager:
                     "NEW_PERSON_ALLOWED_NO_MATCH",
                 )
                 candidate.last_gate_reason = "OUTSIDE_TO_INSIDE_CONFIRMED"
-                session = self._promote_candidate(candidate, features)
+                session = self._promote_candidate(
+                    candidate,
+                    features,
+                    entry_reason="CONFIRMED_ENTER",
+                )
                 self.seen_person_uids_this_frame.add(session.person_uid)
-                return self._build_identity_result(
-                    has_active_person_id=True,
-                    person_uid=session.person_uid,
-                    yolo_track_id=yolo_track_id,
-                    previous_yolo_track_id=None,
-                    identity_status="NEW",
-                    session_status="ACTIVE",
-                    session_lifecycle="ACTIVE_INSIDE",
-                    identity_debug=f"{self._format_person_uid(session.person_uid)} / YOLO {yolo_track_id}",
-                    identity_feet_source=trusted_feet_source,
-                    identity_gate_reason=session.last_gate_reason,
-                    relink_score=None,
-                    relink_frame_gap=0,
-                    identity_inside_test=inside_test,
-                    identity_entry_reason=session.entry_reason,
+                return self._build_promoted_candidate_result(
+                    session,
+                    yolo_track_id,
+                    trusted_feet_source,
+                    inside_test,
                     identity_outside_proof=True,
                     identity_enter_confirm_hits=SETTINGS.identity.entry_confirm_frames,
                     identity_enter_confirm_target=SETTINGS.identity.entry_confirm_frames,
-                    has_counted_enter=session.has_counted_enter,
-                    has_counted_exit=session.has_counted_exit,
-                    count_event_reason=session.last_count_event_reason,
-                    merged_from_analysis_subject_id=self._format_candidate_analysis_subject_id(
-                        yolo_track_id
-                    ),
+                    merge_from_candidate_history=True,
                 )
 
             candidate.last_gate_reason = (
@@ -1867,7 +2342,7 @@ class PersonIdentityManager:
                 if trusted_feet_point is None
                 else "INSIDE_TEST_UNAVAILABLE"
             )
-            )
+        )
         if trusted_feet_point is None and candidate_feet_reason != "NONE":
             candidate.last_gate_reason = "NO_FEET"
         return self._create_candidate_result(
@@ -2163,12 +2638,24 @@ class PersonIdentityManager:
             "has_counted_exit": identity_result.has_counted_exit,
             "count_event_reason": identity_result.count_event_reason,
             "total_entered_count": self.total_entered_count,
+            "total_confirmed_entered_count": self.total_confirmed_entered_count,
+            "total_occluded_entered_count": self.total_occluded_entered_count,
             "total_exited_count": self.total_exited_count,
             "entered_count": self.total_entered_count,
             "exited_count": self.total_exited_count,
             "active_inside_count": active_inside_count,
             "lost_inside_count": lost_inside_count,
             "active_or_lost_inside_count": self.get_active_or_lost_inside_count(),
+            "occluded_entry_candidate_age_frames": identity_result.occluded_entry_candidate_age_frames,
+            "occluded_entry_age_target": identity_result.occluded_entry_age_target,
+            "occluded_entry_inside_frames": identity_result.occluded_entry_inside_frames,
+            "occluded_entry_inside_target": identity_result.occluded_entry_inside_target,
+            "occluded_entry_motion_frames": identity_result.occluded_entry_motion_frames,
+            "occluded_entry_motion_target": identity_result.occluded_entry_motion_target,
+            "occluded_entry_block_reason": identity_result.occluded_entry_block_reason,
+            "occluded_entry_nearest_ghost_score": identity_result.occluded_entry_nearest_ghost_score,
+            "occluded_entry_nearest_active_iou": identity_result.occluded_entry_nearest_active_iou,
+            "occluded_entry_nearest_active_distance": identity_result.occluded_entry_nearest_active_distance,
         }
         analysis.update(identity_fields)
 
@@ -2186,7 +2673,7 @@ class PersonIdentityManager:
             color = SETTINGS.violation.outside_color
         elif identity_result.session_lifecycle == "CANDIDATE_NO_FEET":
             color = (0, 165, 255)
-        elif identity_result.session_lifecycle == "CANDIDATE_INSIDE_NO_OUTSIDE_PROOF":
+        elif identity_result.session_lifecycle == "OCCLUDED_ENTRY_CANDIDATE":
             color = (0, 185, 255)
         elif identity_result.session_lifecycle == "UNASSIGNED_INSIDE_CANDIDATE":
             color = (0, 185, 255)
@@ -2239,12 +2726,24 @@ class PersonIdentityManager:
             "has_counted_exit": identity_result.has_counted_exit,
             "count_event_reason": identity_result.count_event_reason,
             "total_entered_count": self.total_entered_count,
+            "total_confirmed_entered_count": self.total_confirmed_entered_count,
+            "total_occluded_entered_count": self.total_occluded_entered_count,
             "total_exited_count": self.total_exited_count,
             "entered_count": self.total_entered_count,
             "exited_count": self.total_exited_count,
             "active_inside_count": active_inside_count,
             "lost_inside_count": lost_inside_count,
             "active_or_lost_inside_count": self.get_active_or_lost_inside_count(),
+            "occluded_entry_candidate_age_frames": identity_result.occluded_entry_candidate_age_frames,
+            "occluded_entry_age_target": identity_result.occluded_entry_age_target,
+            "occluded_entry_inside_frames": identity_result.occluded_entry_inside_frames,
+            "occluded_entry_inside_target": identity_result.occluded_entry_inside_target,
+            "occluded_entry_motion_frames": identity_result.occluded_entry_motion_frames,
+            "occluded_entry_motion_target": identity_result.occluded_entry_motion_target,
+            "occluded_entry_block_reason": identity_result.occluded_entry_block_reason,
+            "occluded_entry_nearest_ghost_score": identity_result.occluded_entry_nearest_ghost_score,
+            "occluded_entry_nearest_active_iou": identity_result.occluded_entry_nearest_active_iou,
+            "occluded_entry_nearest_active_distance": identity_result.occluded_entry_nearest_active_distance,
             "wrong_lane": False,
             "direction": "ANALYZING",
             "final_direction": "ANALYZING",
