@@ -1435,7 +1435,22 @@ def build_standing_debug_lines(analysis: AnalysisLike) -> list[str]:
 
 def build_two_step_debug_lines(analysis: AnalysisLike) -> list[str]:
     debug_analysis = _get_debug_analysis_source(analysis)
+    direction = str(debug_analysis.get("direction", "UNKNOWN"))
+    two_step_status = str(
+        debug_analysis.get("two_step_skip_status", "NOT_EVALUATED")
+    )
+    two_step_reason = str(
+        debug_analysis.get("two_step_skip_reason", "NOT_EVALUATED")
+    )
+    if two_step_status == "SKIPPED":
+        return [
+            "TWO_STEP=SKIPPED",
+            f"DIR={direction}",
+            "REASON=ONLY_CHECK_WHEN_UP",
+        ]
     return [
+        f"DIR:{direction}",
+        f"TWO_STEP_STATUS:{two_step_status}",
         f"LEFT_RAW_STEP:{debug_analysis.get('left_raw_step', 'NA')}",
         f"RIGHT_RAW_STEP:{debug_analysis.get('right_raw_step', 'NA')}",
         f"LEFT_FILTERED_STEP:{debug_analysis.get('left_filtered_step', 'NA')}",
@@ -1444,7 +1459,7 @@ def build_two_step_debug_lines(analysis: AnalysisLike) -> list[str]:
         f"LEFT_FILTER_REASON:{debug_analysis.get('left_step_filter_reason', 'NOT_EVALUATED')}",
         f"RIGHT_FILTER_REASON:{debug_analysis.get('right_step_filter_reason', 'NOT_EVALUATED')}",
         f"TWO_STEP_RESULT:{debug_analysis.get('two_step_skip_confirmed', False)}",
-        f"TWO_STEP_REASON:{debug_analysis.get('two_step_skip_reason', 'NOT_EVALUATED')}",
+        f"TWO_STEP_REASON:{two_step_reason}",
     ]
 
 
@@ -1989,7 +2004,7 @@ def draw_person_overlay(
             text_drawer=text_drawer,
         )
     elif focus_mode == "two_step":
-        if features is not None:
+        if features is not None and str(analysis.get("direction", "UNKNOWN")) == "UP":
             draw_feet_comparison_debug(
                 frame,
                 box,
@@ -2479,6 +2494,7 @@ def _build_all_debug_lines(analysis: AnalysisLike) -> list[str]:
         f"LEFT_FOOT_LANDED:{analysis.get('left_foot_landed', False)}",
         f"RIGHT_FOOT_LANDED:{analysis.get('right_foot_landed', False)}",
         f"TWO_STEP_SKIP_CHECK_AVAILABLE:{analysis.get('two_step_skip_check_available', False)}",
+        f"TWO_STEP_SKIP_STATUS:{analysis.get('two_step_skip_status', 'NOT_EVALUATED')}",
         f"TWO_STEP_SKIP_REASON:{analysis.get('two_step_skip_reason', 'NOT_EVALUATED')}",
         f"TWO_STEP_SKIP_CONFIRMED:{analysis.get('two_step_skip_confirmed', False)}",
         f"LEFT_FOOT_IN:{analysis.get('left_foot_in', False)}",

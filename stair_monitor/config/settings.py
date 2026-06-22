@@ -39,7 +39,7 @@ class VideoConfig:
     # Video dau vao cua ban Windows/demo.
     input_path: str = field(
         default_factory=lambda: str(
-            Path("video") / "raw_video"/ "record_2026-06-10_17-43-50.avi"
+            Path("video") / "raw_video"/ "record_2026-06-10_17-41-44.avi"
         )
     )
     # Video output sau khi da ve overlay.
@@ -75,7 +75,7 @@ class DemoOverlayConfig:
     # Demo badge canh bao se duoc giu them N giay.
     demo_alert_hold_seconds: float = 1.0
     # Chon nhom debug can tap trung. "all" chi co tac dung khi enable_debug_overlay bat.
-    debug_focus_mode: DebugFocusMode = "feet"
+    debug_focus_mode: DebugFocusMode = "two_step"
     # Legacy compatibility flag; neu bat thi runtime map sang focus mode handrail.
     show_handrail_debug_only: bool = False
     # Ve line tu wrist toi diem gan nhat tren handrail khi debug handrail.

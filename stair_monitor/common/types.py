@@ -371,6 +371,7 @@ class AnalysisResult(TypedDict, total=False):
     left_foot_landed: bool
     right_foot_landed: bool
     two_step_skip_check_available: bool
+    two_step_skip_status: str
     two_step_skip_reason: str
     two_step_skip_confirmed: bool
     left_foot_in: bool

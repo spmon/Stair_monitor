@@ -127,6 +127,7 @@ RESULT_CONTEXT_FIELDS = (
     ("left_foot_landed", "left_foot_landed"),
     ("right_foot_landed", "right_foot_landed"),
     ("two_step_skip_check_available", "two_step_skip_check_available"),
+    ("two_step_skip_status", "two_step_skip_status"),
     ("two_step_skip_reason", "two_step_skip_reason"),
     ("two_step_skip_confirmed", "two_step_skip_confirmed"),
     ("left_foot_in", "left_foot_in"),
@@ -363,6 +364,7 @@ DEBUG_INFO_FIELDS = (
     "left_foot_landed",
     "right_foot_landed",
     "two_step_skip_check_available",
+    "two_step_skip_status",
     "two_step_skip_reason",
     "two_step_skip_confirmed",
     "left_foot_in",
@@ -558,6 +560,7 @@ class ResultBuilderMixin:
     # Gom cac loai loi thuc su tu tung module.
     # Danh sach nay duoc dung cho overlay hien tai, alert demo va log.
     def _collect_warnings(
+        direction: str,
         wrong_lane: bool,
         hold_final_status: str,
         backward_confirmed: bool,
@@ -568,6 +571,7 @@ class ResultBuilderMixin:
         """Gom cac warning final tu tung module hanh vi.
 
         Args:
+            direction: Direction hien tai cua subject.
             wrong_lane: Ket qua Sai Lan final.
             hold_final_status: Ket qua hold final sau history.
             backward_confirmed: Ket qua Di Lui final.
@@ -598,7 +602,7 @@ class ResultBuilderMixin:
             warnings.append("Di Lui")
         if standing_still_confirmed:
             warnings.append("Dung Yen")
-        if two_step_skip_confirmed:
+        if direction == "UP" and two_step_skip_confirmed:
             warnings.append("Buoc 2 Bac")
         return ResultBuilderMixin._apply_lane_warning_priority(warnings)
 
@@ -835,6 +839,7 @@ class ResultBuilderMixin:
             "left_foot_landed": False,
             "right_foot_landed": False,
             "two_step_skip_check_available": False,
+            "two_step_skip_status": "NOT_EVALUATED",
             "two_step_skip_reason": "NOT_EVALUATED",
             "two_step_skip_confirmed": False,
             "left_foot_in": False,
