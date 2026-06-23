@@ -1,5 +1,8 @@
-from pathlib import Path
+
+import os
+import threading
 import time
+from pathlib import Path
 from typing import TypeAlias
 
 import cv2
@@ -14,13 +17,12 @@ FloatArray: TypeAlias = NDArray[np.float32] | NDArray[np.float64]
 RoiCoords: TypeAlias = list[list[int]]
 ColorBGR: TypeAlias = tuple[int, int, int]
 
-VIDEO_INPUT_PATH = "video/raw_video/record_2026-06-06_10-00-21.avi"
-VIDEO_OUTPUT_PATH = "video/roi_warning_output3.mp4"
-
+# --- Config ---
+RTSP_URL = "rtsp://admin:vna@123456@localhost:9999/cam/realmonitor?channel=1&subtype=0"
 POSE_MODEL_PATH = "yolo11x-pose.pt"
 
 POSE_IMGSZ = 640
-PERSON_CONF_THRES = 0.5
+PERSON_CONF_THRES = 0.7
 KEYPOINT_CONF_THRES = 0.35
 VIRTUAL_FOOT_SCALE = 1.0
 PERSON_MIN_AREA = 3000
@@ -30,15 +32,108 @@ ALERT_HOLD_FRAMES = 10
 BLINK_INTERVAL_FRAMES = 5
 DEBUG_MODE = False
 
+SAVE_OUTPUT = False
+VIDEO_OUTPUT_PATH = "video/rtsp_output.mp4"
+
 roi_coords: RoiCoords = [
-    [748, 727],
-    [1568, 662],
-    [1558, 1293],
-    [609, 1294],
+    [
+            1263,
+            1288
+        ],
+        [
+            1340,
+            766
+        ],
+        [
+            1666,
+            751
+        ],
+        [
+            1832,
+            1286
+        ]
 ]
 
 roi_polygon: Polygon = Polygon(roi_coords)
 roi_pts: NDArray[np.int32] = np.array(roi_coords, np.int32).reshape((-1, 1, 2))
+
+
+class LatestFrameCapture:
+    def __init__(self, rtsp_url: str) -> None:
+        self.rtsp_url = rtsp_url
+        self.cap: cv2.VideoCapture | None = None
+        self.lock = threading.Lock()
+        self.latest_frame: FrameArray | None = None
+        self.sequence_id = 0
+        self.running = False
+        self.thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self.running = True
+        self.thread = threading.Thread(target=self._reader_loop, daemon=True)
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.running = False
+        if self.thread is not None:
+            self.thread.join(timeout=2.0)
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+
+    def _open_capture(self) -> bool:
+        if self.cap is not None:
+            self.cap.release()
+
+        self.cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
+
+        try:
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
+
+        return self.cap.isOpened()
+
+    def _reader_loop(self) -> None:
+        while self.running:
+            if self.cap is None or not self.cap.isOpened():
+                print("Đang kết nối RTSP...")
+                if not self._open_capture():
+                    print("Không mở được RTSP, thử lại sau...")
+                    time.sleep(1.0)
+                    continue
+
+            ret, frame = self.cap.read()
+            if not ret or frame is None:
+                print("Mất frame RTSP, reconnect...")
+                if self.cap is not None:
+                    self.cap.release()
+                self.cap = None
+                time.sleep(0.2)
+                continue
+
+            with self.lock:
+                self.latest_frame = frame
+                self.sequence_id += 1
+
+    def read_latest(self) -> tuple[int | None, FrameArray | None]:
+        with self.lock:
+            if self.latest_frame is None:
+                return None, None
+
+            return self.sequence_id, self.latest_frame.copy()
+
+    def wait_first_frame(self, timeout_sec: float = 10.0) -> tuple[int, FrameArray]:
+        start = time.perf_counter()
+
+        while time.perf_counter() - start < timeout_sec:
+            sequence_id, frame = self.read_latest()
+            if sequence_id is not None and frame is not None:
+                return sequence_id, frame
+
+            time.sleep(0.01)
+
+        raise RuntimeError("Không đọc được frame đầu tiên từ RTSP.")
 
 
 def is_point_valid(p: FloatArray) -> bool:
@@ -53,10 +148,8 @@ def is_keypoint_valid(
     point = kpts[index]
     if not is_point_valid(point):
         return False
-
     if kpt_conf is not None:
         return bool(kpt_conf[index] >= KEYPOINT_CONF_THRES)
-
     return True
 
 
@@ -96,7 +189,6 @@ def box_roi_overlap_ratio(person_box: FloatArray) -> float:
     person_area = person_poly.area
     if person_area <= 0:
         return 0.0
-
     inter_area = person_poly.intersection(roi_polygon).area
     return float(inter_area / person_area)
 
@@ -194,12 +286,7 @@ def draw_alert_text(draw_frame: FrameArray) -> None:
     pad_x = 18
     pad_y = 14
 
-    (text_width, text_height), baseline = cv2.getTextSize(
-        text,
-        font,
-        font_scale,
-        thickness,
-    )
+    (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
 
     cv2.rectangle(
         draw_frame,
@@ -208,23 +295,10 @@ def draw_alert_text(draw_frame: FrameArray) -> None:
         (0, 0, 180),
         -1,
     )
-
-    cv2.putText(
-        draw_frame,
-        text,
-        (x, y),
-        font,
-        font_scale,
-        (255, 255, 255),
-        thickness,
-        cv2.LINE_AA,
-    )
+    cv2.putText(draw_frame, text, (x, y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
 
 
-def draw_people_count(
-    draw_frame: FrameArray,
-    people_in_roi_count: int,
-) -> None:
+def draw_people_count(draw_frame: FrameArray, people_in_roi_count: int) -> None:
     text = f"People in zone: {people_in_roi_count}"
     x, y = 40, 140
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -233,12 +307,7 @@ def draw_people_count(
     pad_x = 14
     pad_y = 12
 
-    (text_width, text_height), baseline = cv2.getTextSize(
-        text,
-        font,
-        font_scale,
-        thickness,
-    )
+    (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
 
     cv2.rectangle(
         draw_frame,
@@ -247,17 +316,7 @@ def draw_people_count(
         (0, 0, 180),
         -1,
     )
-
-    cv2.putText(
-        draw_frame,
-        text,
-        (x, y),
-        font,
-        font_scale,
-        (255, 255, 255),
-        thickness,
-        cv2.LINE_AA,
-    )
+    cv2.putText(draw_frame, text, (x, y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
 
 
 def draw_person_debug(
@@ -275,28 +334,15 @@ def draw_person_debug(
     for idx in range(17):
         if not is_keypoint_valid(keypoints, idx, kpt_conf):
             continue
-
         point = keypoints[idx]
         is_roi_point = point_in_roi(point)
         point_color: ColorBGR = (0, 0, 255) if is_roi_point else (0, 255, 255)
         radius = 5 if idx in {13, 14, 15, 16} else 3
-        cv2.circle(
-            draw_frame,
-            (int(point[0]), int(point[1])),
-            radius,
-            point_color,
-            -1,
-        )
+        cv2.circle(draw_frame, (int(point[0]), int(point[1])), radius, point_color, -1)
 
     for virtual_foot, _source in estimate_virtual_feet_from_knees(keypoints, kpt_conf):
         point_color = (0, 0, 255) if point_in_roi(virtual_foot) else (255, 255, 0)
-        cv2.circle(
-            draw_frame,
-            (int(virtual_foot[0]), int(virtual_foot[1])),
-            6,
-            point_color,
-            2,
-        )
+        cv2.circle(draw_frame, (int(virtual_foot[0]), int(virtual_foot[1])), 6, point_color, 2)
 
     width = float(person_box[2] - person_box[0])
     height = float(person_box[3] - person_box[1])
@@ -304,25 +350,13 @@ def draw_person_debug(
         np.array([person_box[0] + 0.50 * width, person_box[3]], dtype=np.float32),
         np.array([person_box[0] + 0.25 * width, person_box[3]], dtype=np.float32),
         np.array([person_box[0] + 0.75 * width, person_box[3]], dtype=np.float32),
-        np.array(
-            [person_box[0] + 0.50 * width, person_box[1] + 0.50 * height],
-            dtype=np.float32,
-        ),
-        np.array(
-            [person_box[0] + 0.50 * width, person_box[1] + 0.85 * height],
-            dtype=np.float32,
-        ),
+        np.array([person_box[0] + 0.50 * width, person_box[1] + 0.50 * height], dtype=np.float32),
+        np.array([person_box[0] + 0.50 * width, person_box[1] + 0.85 * height], dtype=np.float32),
     ]
 
     for point in bbox_points:
         point_color = (0, 0, 255) if point_in_roi(point) else (255, 0, 0)
-        cv2.circle(
-            draw_frame,
-            (int(point[0]), int(point[1])),
-            4,
-            point_color,
-            -1,
-        )
+        cv2.circle(draw_frame, (int(point[0]), int(point[1])), 4, point_color, -1)
 
     debug_text = f"IN ROI by {roi_source}" if inside_roi else "OUTSIDE ROI"
     cv2.putText(
@@ -338,156 +372,151 @@ def draw_person_debug(
 
 
 def run_danger_zone_monitor() -> None:
-    print("Dang load model...")
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+
+    print("Đang load model...")
     pose_model: YOLO = YOLO(POSE_MODEL_PATH)
     model_names: dict[int, str] = {
-        int(key): str(value)
-        for key, value in pose_model.names.items()
+        int(k): str(v) for k, v in pose_model.names.items()
     }
 
-    cap: cv2.VideoCapture = cv2.VideoCapture(VIDEO_INPUT_PATH)
-    if not cap.isOpened():
-        raise FileNotFoundError(f"Khong mo duoc video: {VIDEO_INPUT_PATH}")
+    out = None
+    latest_capture: LatestFrameCapture | None = None
+    frame_idx = 0
+    last_alert_frame = -999999
+    start_time = time.perf_counter()
+    try:
+        latest_capture = LatestFrameCapture(RTSP_URL)
+        latest_capture.start()
 
-    width: int = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height: int = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps: float = float(cap.get(cv2.CAP_PROP_FPS))
+        first_sequence_id, first_frame = latest_capture.wait_first_frame(timeout_sec=10.0)
+        print("Đã nhận frame đầu tiên.")
 
-    if width <= 0 or height <= 0:
-        raise ValueError("Kich thuoc video khong hop le.")
-    if fps <= 0:
-        fps = 25.0
+        height, width = first_frame.shape[:2]
+        print(f"Kích thước frame: {width}x{height}")
 
-    output_path = Path(VIDEO_OUTPUT_PATH)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+        if SAVE_OUTPUT:
+            Path(VIDEO_OUTPUT_PATH).parent.mkdir(parents=True, exist_ok=True)
+            out = cv2.VideoWriter(
+                VIDEO_OUTPUT_PATH,
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                25.0,
+                (width, height),
+            )
 
-    out: cv2.VideoWriter = cv2.VideoWriter(
-        str(output_path),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        fps,
-        (width, height),
-    )
-    if not out.isOpened():
-        raise RuntimeError(f"Khong tao duoc output video: {VIDEO_OUTPUT_PATH}")
-
-    print("Warming up model...")
-    dummy_frame: FrameArray = np.zeros((height, width, 3), dtype=np.uint8)
-    _ = pose_model(
-        dummy_frame,
-        imgsz=POSE_IMGSZ,
-        conf=PERSON_CONF_THRES,
-        classes=[0],
-        verbose=False,
-    )[0]
-
-    frame_idx: int = 0
-    last_alert_frame: int = -999999
-    start_time: float = time.perf_counter()
-
-    print("Bat dau xu ly video...")
-    while cap.isOpened():
-        ret: bool
-        frame: FrameArray
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        frame_idx += 1
-        infer_frame: FrameArray = frame.copy()
-        draw_frame: FrameArray = frame.copy()
-
-        pose_results: Results = pose_model(
-            infer_frame,
+        print("Warming up model...")
+        dummy = np.zeros((height, width, 3), dtype=np.uint8)
+        _ = pose_model(
+            dummy,
             imgsz=POSE_IMGSZ,
             conf=PERSON_CONF_THRES,
             classes=[0],
             verbose=False,
         )[0]
 
-        raw_danger_alert = False
-        people_in_roi_count = 0
+        print("Bắt đầu xử lý stream. Nhấn 'q' để thoát.")
+        last_processed_sequence_id = first_sequence_id - 1
 
-        if pose_results.keypoints is not None and pose_results.boxes is not None:
-            bboxes_array: FloatArray = pose_results.boxes.xyxy.cpu().numpy()
-            person_conf_array: FloatArray = pose_results.boxes.conf.cpu().numpy()
-            class_array: FloatArray = pose_results.boxes.cls.cpu().numpy()
-            keypoints_array: FloatArray = pose_results.keypoints.xy.cpu().numpy()
-            keypoint_conf_array: FloatArray | None = None
-            if pose_results.keypoints.conf is not None:
-                keypoint_conf_array = pose_results.keypoints.conf.cpu().numpy()
+        while True:
+            sequence_id, frame = latest_capture.read_latest()
+            if frame is None or sequence_id is None:
+                time.sleep(0.005)
+                continue
 
-            person_count: int = min(
-                len(bboxes_array),
-                len(person_conf_array),
-                len(class_array),
-                len(keypoints_array),
-            )
+            if sequence_id == last_processed_sequence_id:
+                time.sleep(0.005)
+                continue
 
-            for index in range(person_count):
-                person_box: FloatArray = bboxes_array[index]
-                person_conf = float(person_conf_array[index])
-                person_cls = float(class_array[index])
-                keypoints: FloatArray = keypoints_array[index]
-                keypoint_conf: FloatArray | None = None
-                if keypoint_conf_array is not None and index < len(keypoint_conf_array):
-                    keypoint_conf = keypoint_conf_array[index]
+            last_processed_sequence_id = sequence_id
+            frame_idx += 1
+            infer_frame: FrameArray = frame.copy()
+            draw_frame: FrameArray = frame.copy()
 
-                if not is_person_class(person_cls, model_names):
-                    continue
-                if not is_valid_person_box(person_box, person_conf):
-                    continue
+            pose_results: Results = pose_model(
+                infer_frame,
+                imgsz=POSE_IMGSZ,
+                conf=PERSON_CONF_THRES,
+                classes=[0],
+                verbose=False,
+            )[0]
 
-                inside_roi, roi_source = person_in_danger_zone(
-                    keypoints,
-                    person_box,
-                    keypoint_conf,
+            raw_danger_alert = False
+            people_in_roi_count = 0
+
+            if pose_results.keypoints is not None and pose_results.boxes is not None:
+                bboxes_array: FloatArray = pose_results.boxes.xyxy.cpu().numpy()
+                person_conf_array: FloatArray = pose_results.boxes.conf.cpu().numpy()
+                class_array: FloatArray = pose_results.boxes.cls.cpu().numpy()
+                keypoints_array: FloatArray = pose_results.keypoints.xy.cpu().numpy()
+                keypoint_conf_array: FloatArray | None = None
+                if pose_results.keypoints.conf is not None:
+                    keypoint_conf_array = pose_results.keypoints.conf.cpu().numpy()
+
+                person_count = min(
+                    len(bboxes_array),
+                    len(person_conf_array),
+                    len(class_array),
+                    len(keypoints_array),
                 )
 
-                if inside_roi:
-                    raw_danger_alert = True
-                    people_in_roi_count += 1
-                    last_alert_frame = frame_idx
+                for index in range(person_count):
+                    person_box: FloatArray = bboxes_array[index]
+                    person_conf = float(person_conf_array[index])
+                    person_cls = float(class_array[index])
+                    keypoints: FloatArray = keypoints_array[index]
+                    keypoint_conf: FloatArray | None = None
+                    if keypoint_conf_array is not None and index < len(keypoint_conf_array):
+                        keypoint_conf = keypoint_conf_array[index]
 
-                if DEBUG_MODE:
-                    draw_person_debug(
-                        draw_frame,
-                        person_box,
-                        keypoints,
-                        keypoint_conf,
-                        inside_roi,
-                        roi_source,
-                    )
+                    if not is_person_class(person_cls, model_names):
+                        continue
+                    if not is_valid_person_box(person_box, person_conf):
+                        continue
 
-        danger_alert = raw_danger_alert or (
-            frame_idx - last_alert_frame <= ALERT_HOLD_FRAMES
-        )
+                    inside_roi, roi_source = person_in_danger_zone(keypoints, person_box, keypoint_conf)
 
-        roi_color: ColorBGR = (0, 0, 255) if danger_alert else (0, 255, 0)
-        draw_roi(draw_frame, roi_color)
+                    if inside_roi:
+                        raw_danger_alert = True
+                        people_in_roi_count += 1
+                        last_alert_frame = frame_idx
 
-        if danger_alert:
-            blink_on: bool = (frame_idx // BLINK_INTERVAL_FRAMES) % 2 == 0
-            if blink_on:
-                overlay: FrameArray = draw_frame.copy()
-                overlay[:] = (0, 0, 255)
-                draw_frame = cv2.addWeighted(overlay, 0.35, draw_frame, 0.65, 0)
+                    if DEBUG_MODE:
+                        draw_person_debug(draw_frame, person_box, keypoints, keypoint_conf, inside_roi, roi_source)
 
+            danger_alert = raw_danger_alert or (frame_idx - last_alert_frame <= ALERT_HOLD_FRAMES)
+
+            roi_color: ColorBGR = (0, 0, 255) if danger_alert else (0, 255, 0)
             draw_roi(draw_frame, roi_color)
-            draw_alert_text(draw_frame)
 
-        if people_in_roi_count > 0:
-            draw_people_count(draw_frame, people_in_roi_count)
+            if danger_alert:
+                blink_on: bool = (frame_idx // BLINK_INTERVAL_FRAMES) % 2 == 0
+                if blink_on:
+                    overlay: FrameArray = draw_frame.copy()
+                    overlay[:] = (0, 0, 255)
+                    draw_frame = cv2.addWeighted(overlay, 0.35, draw_frame, 0.65, 0)
+                draw_roi(draw_frame, roi_color)
+                draw_alert_text(draw_frame)
 
-        out.write(draw_frame)
+            if people_in_roi_count > 0:
+                draw_people_count(draw_frame, people_in_roi_count)
 
-    cap.release()
-    out.release()
-    cv2.destroyAllWindows()
+            if out is not None:
+                out.write(draw_frame)
+            display_frame = cv2.resize(draw_frame, (0, 0), fx=0.5, fy=0.5)
 
-    total_time: float = time.perf_counter() - start_time
-    print(f"Tong so frame da xu ly: {frame_idx}")
-    print(f"Tong thoi gian xu ly: {total_time:.2f} giay")
-    print(f"Hoan tat! Video da duoc luu tai: {VIDEO_OUTPUT_PATH}")
+            cv2.imshow("Danger Zone Monitor", display_frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                print("Đang thoát...")
+                break
+    finally:
+        if latest_capture is not None:
+            latest_capture.stop()
+        if out is not None:
+            out.release()
+        cv2.destroyAllWindows()
+
+        total_time = time.perf_counter() - start_time
+        print(f"Tổng frames: {frame_idx} | Thời gian: {total_time:.2f}s")
 
 
 if __name__ == "__main__":

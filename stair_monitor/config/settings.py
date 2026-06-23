@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
+from loguru import logger
+
 from stair_monitor.common.types import (
     CameraConfigDict,
     ColorBGR,
@@ -37,23 +39,32 @@ class VideoConfig:
     """Nhom setting dau vao/dau ra video cua demo Windows."""
 
     # Video dau vao cua ban Windows/demo.
+    # Co the la file path, RTSP URL hoac sentinel "RTSP_TUNNEL" de test-cauthang.py map sang URL localhost.
     input_path: str = field(
-        default_factory=lambda: str(
-            Path("video") / "raw_video"/ "record_2026-06-10_17-41-44.avi"
-        )
+        default_factory=lambda: "RTSP_TUNNEL"
     )
     # Video output sau khi da ve overlay.
     output_path: str = field(
         default_factory=lambda: str(Path("video") / "stair_demo" / "demo50.mp4")
     )
     # JSON chua line/polygon ROI, lane va handrail.
-    camera_config_path: str = field(default_factory=lambda: str(Path("camera_config6.json")))
+    camera_config_path: str = field(default_factory=lambda: str(Path("camera_config5.json")))
     # Luu video output sau khi ve overlay.
-    save_output_video: bool = True
+    save_output_video: bool = False
     # Luu snapshot input/final de debug model input.
     save_model_input_debug: bool = False
     # Moi N frame moi luu 1 snapshot debug.
     save_model_input_debug_every: int = 60
+    # Bat cua so live stream tren Windows/demo.
+    show_live_window: bool = True
+    # Ti le resize overlay chi de hien thi live window.
+    live_window_scale: float = 0.5
+    # Bat logger su kien violation ra terminal + CSV.
+    alert_log_enabled: bool = True
+    # Thu muc chua file CSV alert cho Windows/demo.
+    alert_log_dir: str = "logs"
+    # Cooldown log cung mot person/warning tinh theo giay.
+    alert_log_cooldown_seconds: float = 3.0
 
 
 @dataclass(frozen=True)
@@ -67,15 +78,17 @@ class DemoOverlayConfig:
     # Bat debug text chi tiet cho tung nguoi.
     enable_verbose_person_debug: bool = False
     # Bat ve skeleton tay/than de quan sat pose.
-    enable_skeleton_draw: bool = True
+    enable_skeleton_draw: bool = False
     # Bat ve text tieng Viet qua PIL/font Windows.
     enable_vietnamese_text: bool = True
     # Neu an toan thi co hien "An Toan" hay khong.
     draw_safe_status: bool = False
     # Demo badge canh bao se duoc giu them N giay.
     demo_alert_hold_seconds: float = 1.0
+    # Demo live chi hien frame goc + badge loi lon, khong ve bbox/keypoint/ROI/debug.
+    demo_alert_only_display: bool = True
     # Chon nhom debug can tap trung. "all" chi co tac dung khi enable_debug_overlay bat.
-    debug_focus_mode: DebugFocusMode = "two_step"
+    debug_focus_mode: DebugFocusMode = "handrail"
     # Legacy compatibility flag; neu bat thi runtime map sang focus mode handrail.
     show_handrail_debug_only: bool = False
     # Ve line tu wrist toi diem gan nhat tren handrail khi debug handrail.
@@ -115,6 +128,10 @@ class DemoOverlayConfig:
     @property
     def focus_debug_only(self) -> bool:
         return is_specific_debug_focus_mode(self.effective_debug_focus_mode)
+
+    @property
+    def alert_only_display_active(self) -> bool:
+        return self.demo_mode and self.demo_alert_only_display and not self.focus_debug_only
 
 
 @dataclass(frozen=True)
@@ -410,9 +427,9 @@ class PerformanceConfig:
     """Nhom setting log hieu nang cua pipeline demo."""
 
     # Bat log thong ke thoi gian tung block lon.
-    enable_perf_log: bool = True
+    enable_perf_log: bool = False
     # So frame moi lan in thong ke perf.
-    perf_log_interval: int = 30
+    perf_log_interval: int = 300
 
 
 @dataclass(frozen=True)
@@ -515,11 +532,11 @@ def load_camera_config(path: str | None = None) -> CameraConfigDict:
         with config_path.open("r", encoding="utf-8") as file:
             raw_config = json.load(file)
     except FileNotFoundError:
-        print("Khong tim thay file camera_config.json!")
+        logger.error("Khong tim thay file camera_config.json!")
         raise SystemExit(1)
 
     if not isinstance(raw_config, dict):
-        print("camera_config.json khong dung dinh dang dict!")
+        logger.error("camera_config.json khong dung dinh dang dict!")
         raise SystemExit(1)
 
     raw_config["STEP_LINES"] = _normalize_step_lines(raw_config.get("STEP_LINES"))

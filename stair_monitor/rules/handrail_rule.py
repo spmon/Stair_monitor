@@ -141,7 +141,7 @@ def compute_handrail_evidence(
                 -SETTINGS.handrail.left_max_distance <= pair["dist"] <= -10
             )
         if rule == RIGHT_HANDRAIL_RULE:
-            return bool(0 <= pair["dist"] <= 60)
+            return bool(10 <= pair["dist"] <= 60)
         return "UNKNOWN"
 
     # Ket qua o day chi la bang chung frame-level cho tung co tay/tung rail.
