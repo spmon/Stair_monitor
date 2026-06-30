@@ -11,7 +11,10 @@ from stair_monitor.common.types import (
     CameraConfigDict,
     ColorBGR,
     DebugFocusMode,
+    GStreamerCodec,
+    InputMode,
     StepLineJson,
+    VideoCaptureBackend,
 )
 
 # File nay gom toan bo SETTINGS cua ban Windows/demo.
@@ -38,11 +41,28 @@ def is_specific_debug_focus_mode(mode: DebugFocusMode) -> bool:
 class VideoConfig:
     """Nhom setting dau vao/dau ra video cua demo Windows."""
 
-    # Video dau vao cua ban Windows/demo.
-    # Co the la file path, RTSP URL hoac sentinel "RTSP_TUNNEL" de test-cauthang.py map sang URL localhost.
+    # Chon loai nguon vao cho runtime Windows/demo.
+    input_mode: InputMode = "file"
+    # Video dau vao mac dinh cua ban Windows/demo hien tai la video file de review offline.
+    # RTSP URL hoac sentinel "RTSP_TUNNEL" chi con la duong legacy/optional neu can bat lai live mode.
     input_path: str = field(
-        default_factory=lambda: "RTSP_TUNNEL"
+        default_factory=lambda: str(Path("video") / "raw_video" / "record_2026-06-19_15-47-49.avi")
     )
+    # RTSP URL legacy/optional de co the bat lai live mode sau nay neu can.
+    rtsp_url: str = (
+        "rtsp://admin:vna%40123456@localhost:9999/"
+        "cam/realmonitor?channel=1&subtype=0"
+    )
+    # Backend mo RTSP.
+    video_capture_backend: VideoCaptureBackend = "ffmpeg"
+    # Live RTSP co the dung latest-frame wrapper de tranh backlog.
+    use_latest_frame_for_live: bool = True
+    # Codec cho pipeline GStreamer RTSP.
+    gstreamer_codec: GStreamerCodec = "h264"
+    # Latency cho rtspsrc trong pipeline GStreamer.
+    gstreamer_rtsp_latency_ms: int = 0
+    # Neu GStreamer that bai thi co fallback FFmpeg hay khong.
+    fallback_to_ffmpeg_when_gstreamer_fails: bool = True
     # Video output sau khi da ve overlay.
     output_path: str = field(
         default_factory=lambda: str(Path("video") / "stair_demo" / "demo50.mp4")
@@ -50,13 +70,14 @@ class VideoConfig:
     # JSON chua line/polygon ROI, lane va handrail.
     camera_config_path: str = field(default_factory=lambda: str(Path("camera_config5.json")))
     # Luu video output sau khi ve overlay.
-    save_output_video: bool = False
+    save_output_video: bool = True
+    # Luu video output sau khi ve overlay va crop roi vung cau thang.
     # Luu snapshot input/final de debug model input.
     save_model_input_debug: bool = False
     # Moi N frame moi luu 1 snapshot debug.
     save_model_input_debug_every: int = 60
     # Bat cua so live stream tren Windows/demo.
-    show_live_window: bool = True
+    show_live_window: bool = False
     # Ti le resize overlay chi de hien thi live window.
     live_window_scale: float = 0.5
     # Bat logger su kien violation ra terminal + CSV.
@@ -433,6 +454,30 @@ class PerformanceConfig:
 
 
 @dataclass(frozen=True)
+class YoloPoseConfig:
+    """Nhom setting YOLO pose/tracking cho ban Windows/demo."""
+
+    model_path: str = "yolo11x-pose.pt"
+    confidence: float = 0.7
+    iou: float = 0.9
+    tracker_config: str = "bytetrack.yaml"
+
+
+ModelSettings = YoloPoseConfig
+VideoSettings = VideoConfig
+DemoSettings = DemoOverlayConfig
+
+
+@dataclass(frozen=True)
+class LoggingSettings:
+    """Nhom setting log runtime/violation cho ban Windows/demo."""
+
+    log_dir: str = "logs"
+    enable_violation_csv: bool = True
+    violation_cooldown_seconds: float = 3.0
+
+
+@dataclass(frozen=True)
 class AppSettings:
     """Root settings gom cac nhom config lon cua toan bo demo."""
 
@@ -451,6 +496,19 @@ class AppSettings:
     step_band: StepBandConfig = field(default_factory=StepBandConfig)
     two_step_skip: TwoStepSkipConfig = field(default_factory=TwoStepSkipConfig)
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
+    model: ModelSettings = field(default_factory=ModelSettings)
+
+    @property
+    def yolo_pose(self) -> ModelSettings:
+        return self.model
+
+    @property
+    def logging(self) -> LoggingSettings:
+        return LoggingSettings(
+            log_dir=self.video.alert_log_dir,
+            enable_violation_csv=self.video.alert_log_enabled,
+            violation_cooldown_seconds=self.video.alert_log_cooldown_seconds,
+        )
 
 
 SETTINGS = AppSettings()

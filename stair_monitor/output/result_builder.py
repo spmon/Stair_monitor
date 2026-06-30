@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from stair_monitor.common.types import (
     AnalysisResult,
     ColorBGR,
     DebugInfoDict,
+    Direction,
+    HoldStatusLabel,
     PerfStats,
     WarningList,
 )
@@ -23,6 +27,25 @@ DISPLAY_TEXT_REPLACEMENTS = {
     "Ngoai Vung": "Ngoài vùng",
     "An Toan": "An toàn",
 }
+
+
+@dataclass(frozen=True)
+class WarningSnapshot:
+    """Anh chup warning noi bo truoc khi map sang text/mau."""
+
+    warnings: tuple[str, ...]
+    real_warnings: tuple[str, ...]
+    status_warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WarningMappingResult:
+    """Ket qua map warning cuoi cung cho result contract hien tai."""
+
+    warnings: tuple[str, ...]
+    status: str
+    display_status: str
+    color: ColorBGR
 # Bang mapping nay giu result dict on dinh va tranh phai truyen tay tung field o analyzer.
 # RESULT_CONTEXT_FIELDS map ten field public trong result dict
 # voi ten bien trong locals()/context cua analyzer.
@@ -557,12 +580,124 @@ class ResultBuilderMixin:
         return ""
 
     @staticmethod
+    def _resolve_hold_warning(
+        hold_final_status: HoldStatusLabel | str,
+        backward_confirmed: bool,
+    ) -> str | None:
+        """Map ket qua handrail final sang warning hold/no-hold."""
+        if backward_confirmed:
+            return None
+        if hold_final_status == "WRONG_SIDE":
+            return "Vin Sai Ben"
+        if hold_final_status == "NONE":
+            return "Khong Vin"
+        if hold_final_status == "UNKNOWN" and not SETTINGS.demo.demo_mode:
+            return "Khong Xac Dinh"
+        return None
+
+    @staticmethod
+    def _should_append_unknown_status(
+        hold_final_status: HoldStatusLabel | str,
+        warnings: WarningList,
+    ) -> bool:
+        """Giu UNKNOWN trong status day du nhung khong chen sai khi bi lane suppress."""
+        return (
+            hold_final_status == "UNKNOWN"
+            and not SETTINGS.demo.demo_mode
+            and not ResultBuilderMixin._lane_suppresses_hold_display(warnings)
+            and "Khong Xac Dinh" not in warnings
+        )
+
+    @staticmethod
+    def _build_warning_snapshot(
+        warnings: WarningList,
+        hold_final_status: HoldStatusLabel | str,
+    ) -> WarningSnapshot:
+        """Tach warning thuc su, warning cho status day du va warning overlay."""
+        real_warnings = tuple(
+            warning for warning in warnings if warning in REAL_VIOLATION_LABELS
+        )
+        status_warnings = list(warnings)
+        if ResultBuilderMixin._should_append_unknown_status(
+            hold_final_status,
+            status_warnings,
+        ):
+            status_warnings.append("Khong Xac Dinh")
+        return WarningSnapshot(
+            warnings=tuple(warnings),
+            real_warnings=real_warnings,
+            status_warnings=tuple(status_warnings),
+        )
+
+    @staticmethod
+    def _resolve_warning_color(
+        hold_final_status: HoldStatusLabel | str,
+        real_warnings: tuple[str, ...],
+        safe_color: ColorBGR,
+    ) -> ColorBGR:
+        """Chon mau cuoi cung ma khong doi priority hien tai."""
+        has_real_violation = len(real_warnings) > 0
+        has_unknown = hold_final_status == "UNKNOWN" and not has_real_violation
+        if has_real_violation:
+            return SETTINGS.violation.violation_color
+        if has_unknown:
+            return SETTINGS.violation.unknown_color
+        return safe_color
+
+    @staticmethod
+    def _build_status_text(
+        direction: Direction | str,
+        warnings: tuple[str, ...],
+        safe_status: str,
+    ) -> str:
+        """Tao status day du truoc khi doi sang display label."""
+        if warnings:
+            return f"{direction} | {' - '.join(warnings)}"
+        return safe_status
+
+    def _map_warning_result(
+        self,
+        direction: Direction | str,
+        warnings: WarningList,
+        hold_final_status: HoldStatusLabel | str,
+        safe_color: ColorBGR,
+        safe_status: str,
+    ) -> WarningMappingResult:
+        """Map warning final sang status/display_status/color theo contract cu."""
+        warning_snapshot = self._build_warning_snapshot(
+            warnings,
+            hold_final_status,
+        )
+        color = self._resolve_warning_color(
+            hold_final_status,
+            warning_snapshot.real_warnings,
+            safe_color,
+        )
+        status = self._translate_display_text(
+            self._build_status_text(
+                direction,
+                warning_snapshot.status_warnings,
+                safe_status,
+            )
+        )
+        display_status = self._build_display_status(
+            str(direction),
+            list(warning_snapshot.real_warnings),
+        )
+        return WarningMappingResult(
+            warnings=warning_snapshot.warnings,
+            status=status,
+            display_status=display_status,
+            color=color,
+        )
+
+    @staticmethod
     # Gom cac loai loi thuc su tu tung module.
     # Danh sach nay duoc dung cho overlay hien tai, alert demo va log.
     def _collect_warnings(
-        direction: str,
+        direction: Direction | str,
         wrong_lane: bool,
-        hold_final_status: str,
+        hold_final_status: HoldStatusLabel | str,
         backward_confirmed: bool,
         standing_still_confirmed: bool,
         is_carrying: bool = False,
@@ -586,16 +721,15 @@ class ResultBuilderMixin:
         """
         # WARNING: `Di Lui` duoc uu tien hon hold/no-hold trong runtime hien tai.
         # WARNING: `Mang Vac`, `Sai Lan`, `Dung Yen`, `Buoc 2 Bac` la warning doc lap cua tung rule rieng.
-        warnings = []
+        warnings: WarningList = []
         if wrong_lane:
             warnings.append("Sai Lan")
-        if not backward_confirmed:
-            if hold_final_status == "WRONG_SIDE":
-                warnings.append("Vin Sai Ben")
-            elif hold_final_status == "NONE":
-                warnings.append("Khong Vin")
-            elif hold_final_status == "UNKNOWN" and not SETTINGS.demo.demo_mode:
-                warnings.append("Khong Xac Dinh")
+        hold_warning = ResultBuilderMixin._resolve_hold_warning(
+            hold_final_status,
+            backward_confirmed,
+        )
+        if hold_warning is not None:
+            warnings.append(hold_warning)
         if is_carrying:
             warnings.append("Mang Vac")
         if backward_confirmed:
@@ -608,9 +742,9 @@ class ResultBuilderMixin:
 
     def _summarize_result(
         self,
-        direction: str,
+        direction: Direction | str,
         warnings: WarningList,
-        hold_final_status: str,
+        hold_final_status: HoldStatusLabel | str,
         safe_color: ColorBGR,
         safe_status: str,
     ) -> tuple[str, str, ColorBGR]:
@@ -630,39 +764,19 @@ class ResultBuilderMixin:
             debug overlay co the dung status day du, con bbox overlay thuong dung
             display_status gon hon de de doc.
         """
-        # WHY: Mau sac va text display duoc tinh sau cung o day de moi rule khong phai tu quyet dinh UI.
-        # Tach "real violation" ra khoi UNKNOWN de alert demo va mau sac khong bi nham.
-        real_warnings = [
-            warning for warning in warnings if warning in REAL_VIOLATION_LABELS
-        ]
-        has_real_violation = len(real_warnings) > 0
-        has_unknown = hold_final_status == "UNKNOWN" and not has_real_violation
-
-        if has_real_violation:
-            color = SETTINGS.violation.violation_color
-        elif has_unknown:
-            color = SETTINGS.violation.unknown_color
-        else:
-            color = safe_color
-
-        lane_suppresses_hold_display = self._lane_suppresses_hold_display(warnings)
-        status_warnings = list(warnings)
-        if (
-            hold_final_status == "UNKNOWN"
-            and not SETTINGS.demo.demo_mode
-            and not lane_suppresses_hold_display
-            and "Khong Xac Dinh" not in status_warnings
-        ):
-            status_warnings.append("Khong Xac Dinh")
-
-        status = (
-            f"{direction} | {' - '.join(status_warnings)}"
-            if status_warnings
-            else safe_status
+        # WHY: Rule modules chi tra signal nghiep vu; ResultBuilder giu boundary map cuoi.
+        warning_mapping = self._map_warning_result(
+            direction=direction,
+            warnings=warnings,
+            hold_final_status=hold_final_status,
+            safe_color=safe_color,
+            safe_status=safe_status,
         )
-        status = self._translate_display_text(status)
-        display_status = self._build_display_status(direction, real_warnings)
-        return status, display_status, color
+        return (
+            warning_mapping.status,
+            warning_mapping.display_status,
+            warning_mapping.color,
+        )
 
     def _build_result_from_context(
         self,

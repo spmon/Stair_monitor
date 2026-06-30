@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Literal
+
 from stair_monitor.common.types import AnalysisSubjectID, KeypointsArray, Numeric, PoseFeatures
 from stair_monitor.config.settings import SETTINGS
 from stair_monitor.rules.carry_rule import detect_carrying_pose
@@ -8,6 +11,66 @@ CarryInfo = dict[str, object]
 HandClaimEntry = dict[str, int | str | None]
 HandClaimState = dict[str, HandClaimEntry]
 HandrailState = dict[str, object]
+HandSide = Literal["left", "right"]
+HandClaimValue = Literal["HOLD", "CARRY"]
+
+
+@dataclass(frozen=True, slots=True)
+class CarryConfirmationInput:
+    track_id: AnalysisSubjectID
+    front_carry_raw: bool
+    front_carry_two_hand_raw: bool
+    front_carry_one_arm_raw: bool
+    left_carry_allowed: bool
+    right_carry_allowed: bool
+    left_carry_evidence: bool
+    right_carry_evidence: bool
+    left_carry_score: Numeric | None
+    right_carry_score: Numeric | None
+
+
+@dataclass(frozen=True, slots=True)
+class CarryConfirmationResult:
+    front_carry_hits: int
+    front_carry_one_arm_hits: int
+    front_carry_confirmed: bool
+    front_carry_two_hand_confirmed: bool
+    front_carry_one_arm_confirmed: bool
+    left_carry: bool
+    right_carry: bool
+    one_hand_carry_side: str
+    carrying_arm: str
+    is_carrying: bool
+    carry_type: str
+
+
+@dataclass(frozen=True, slots=True)
+class PerHandCarryRawState:
+    left: bool
+    right: bool
+
+    def to_legacy_fields(
+        self,
+        *,
+        left_key: str,
+        right_key: str,
+    ) -> dict[str, bool]:
+        return {
+            left_key: self.left,
+            right_key: self.right,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PerHandClaimSelection:
+    left: HandClaimValue | None
+    right: HandClaimValue | None
+
+
+@dataclass(frozen=True, slots=True)
+class CarryClaimApplicationResult:
+    carry_raw_before_claim: PerHandCarryRawState
+    carry_raw_after_claim: PerHandCarryRawState
 
 # File nay tong hop logic Mang Vac cho ban Windows/demo.
 # FLOW: carry raw tu pose -> gate/claim voi handrail -> history nhieu frame -> warning final `Mang Vac`.
@@ -236,6 +299,92 @@ class CarryAnalysisMixin:
 
     # Neu mot tay da duoc claim cho HOLD thi chan tay do khoi logic carry.
     # Khong duoc de carry ghi de len ket qua hold; hold va carry la 2 logic doc lap.
+    @staticmethod
+    def _get_hand_claim_label(
+        hand_claim_state: HandClaimState | None,
+        hand_side: HandSide,
+    ) -> HandClaimValue | None:
+        if hand_claim_state is None:
+            return None
+        claim_value = hand_claim_state.get(hand_side, {}).get("claim")
+        if claim_value in ("HOLD", "CARRY"):
+            return claim_value
+        return None
+
+    @classmethod
+    def _read_per_hand_claim_selection(
+        cls,
+        hand_claim_state: HandClaimState | None,
+    ) -> PerHandClaimSelection:
+        """Doc claim per-hand va chuan hoa ve boundary typed noi bo cua carry."""
+        return PerHandClaimSelection(
+            left=cls._get_hand_claim_label(hand_claim_state, "left"),
+            right=cls._get_hand_claim_label(hand_claim_state, "right"),
+        )
+
+    @staticmethod
+    def _read_carry_raw_before_claim(
+        carry_info: CarryInfo,
+    ) -> PerHandCarryRawState:
+        """Doc carry raw before-claim tu dict legacy va giu fallback field cu."""
+        return PerHandCarryRawState(
+            left=bool(
+                carry_info.get(
+                    "left_carry_raw_before_claim",
+                    carry_info.get(
+                        "left_carry_raw",
+                        carry_info.get("left_carry", False),
+                    ),
+                )
+            ),
+            right=bool(
+                carry_info.get(
+                    "right_carry_raw_before_claim",
+                    carry_info.get(
+                        "right_carry_raw",
+                        carry_info.get("right_carry", False),
+                    ),
+                )
+            ),
+        )
+
+    @staticmethod
+    def _apply_hold_claim_to_carry_raw_state(
+        carry_raw_before_claim: PerHandCarryRawState,
+        claim_selection: PerHandClaimSelection,
+    ) -> PerHandCarryRawState:
+        """Chi claim HOLD da confirmed moi duoc suppress carry raw cung tay."""
+        return PerHandCarryRawState(
+            left=(
+                False
+                if claim_selection.left == "HOLD"
+                else carry_raw_before_claim.left
+            ),
+            right=(
+                False
+                if claim_selection.right == "HOLD"
+                else carry_raw_before_claim.right
+            ),
+        )
+
+    @classmethod
+    def _build_carry_claim_application_result(
+        cls,
+        carry_info: CarryInfo,
+        hand_claim_state: HandClaimState | None,
+    ) -> CarryClaimApplicationResult:
+        """Tach ro carry raw truoc claim va sau claim cho tung tay."""
+        carry_raw_before_claim = cls._read_carry_raw_before_claim(carry_info)
+        claim_selection = cls._read_per_hand_claim_selection(hand_claim_state)
+        carry_raw_after_claim = cls._apply_hold_claim_to_carry_raw_state(
+            carry_raw_before_claim,
+            claim_selection,
+        )
+        return CarryClaimApplicationResult(
+            carry_raw_before_claim=carry_raw_before_claim,
+            carry_raw_after_claim=carry_raw_after_claim,
+        )
+
     def _apply_hand_claim_to_carry_pose(
         self,
         carry_info: CarryInfo,
@@ -258,27 +407,18 @@ class CarryAnalysisMixin:
             hand_claim_state = {}
 
         carry_info = dict(carry_info)
-        left_carry_raw_before_claim = carry_info.get(
-            "left_carry_raw_before_claim",
-            carry_info.get("left_carry_raw", carry_info.get("left_carry", False)),
+        claim_application = self._build_carry_claim_application_result(
+            carry_info,
+            hand_claim_state,
         )
-        right_carry_raw_before_claim = carry_info.get(
-            "right_carry_raw_before_claim",
-            carry_info.get("right_carry_raw", carry_info.get("right_carry", False)),
+        carry_info.update(
+            claim_application.carry_raw_before_claim.to_legacy_fields(
+                left_key="left_carry_raw_before_claim",
+                right_key="right_carry_raw_before_claim",
+            )
         )
-        carry_info["left_carry_raw_before_claim"] = left_carry_raw_before_claim
-        carry_info["right_carry_raw_before_claim"] = right_carry_raw_before_claim
-
-        left_claim = hand_claim_state.get("left", {}).get("claim")
-        right_claim = hand_claim_state.get("right", {}).get("claim")
-
-        # HOLD claim thi chan carry tren dung tay da duoc xac nhan vin lan can.
-        left_carry_raw_after_claim = (
-            False if left_claim == "HOLD" else left_carry_raw_before_claim
-        )
-        right_carry_raw_after_claim = (
-            False if right_claim == "HOLD" else right_carry_raw_before_claim
-        )
+        left_carry_raw_after_claim = claim_application.carry_raw_after_claim.left
+        right_carry_raw_after_claim = claim_application.carry_raw_after_claim.right
         left_carry_allowed = bool(carry_info.get("left_carry_allowed", True))
         right_carry_allowed = bool(carry_info.get("right_carry_allowed", True))
         strong_left_after_claim = (
@@ -318,8 +458,12 @@ class CarryAnalysisMixin:
             front_carry_two_hand=front_carry_two_hand_after_claim,
         )
 
-        carry_info["left_carry_raw_after_claim"] = left_carry_raw_after_claim
-        carry_info["right_carry_raw_after_claim"] = right_carry_raw_after_claim
+        carry_info.update(
+            claim_application.carry_raw_after_claim.to_legacy_fields(
+                left_key="left_carry_raw_after_claim",
+                right_key="right_carry_raw_after_claim",
+            )
+        )
         carry_info["strong_left_front_after_claim"] = strong_left_after_claim
         carry_info["strong_right_front_after_claim"] = strong_right_after_claim
         carry_info["front_carry_two_hand_raw"] = front_carry_two_hand_after_claim
@@ -345,6 +489,200 @@ class CarryAnalysisMixin:
 
     # Carry history giup tranh bao Mang Vac chi vi 1 frame pose nhieu.
     # Raw la ket qua tung frame, confirmed la ket qua sau khi du hit qua nhieu frame.
+    @staticmethod
+    def _build_carry_confirmation_input(
+        *,
+        track_id: AnalysisSubjectID,
+        front_carry_raw: bool,
+        front_carry_two_hand_raw: bool,
+        front_carry_one_arm_raw: bool,
+        left_carry_allowed: bool,
+        right_carry_allowed: bool,
+        left_carry_evidence: bool,
+        right_carry_evidence: bool,
+        left_carry_score: Numeric | None,
+        right_carry_score: Numeric | None,
+    ) -> CarryConfirmationInput:
+        """Chuan hoa input confirmation sau khi raw carry da qua gate/claim."""
+        return CarryConfirmationInput(
+            track_id=track_id,
+            front_carry_raw=front_carry_raw,
+            front_carry_two_hand_raw=front_carry_two_hand_raw,
+            front_carry_one_arm_raw=front_carry_one_arm_raw,
+            left_carry_allowed=left_carry_allowed,
+            right_carry_allowed=right_carry_allowed,
+            left_carry_evidence=left_carry_evidence,
+            right_carry_evidence=right_carry_evidence,
+            left_carry_score=left_carry_score,
+            right_carry_score=right_carry_score,
+        )
+
+    def _update_carry_confirmation_history(
+        self,
+        confirmation_input: CarryConfirmationInput,
+    ) -> tuple[int, int, bool, bool, bool]:
+        """Cap nhat history two-hand va one-hand, giu nguyen hit/miss policy hien tai."""
+        track_id = confirmation_input.track_id
+        if track_id not in self.front_carry_history:
+            self.front_carry_history[track_id] = []
+        self.front_carry_history[track_id].append(
+            confirmation_input.front_carry_two_hand_raw
+        )
+        self.front_carry_history[track_id] = self.front_carry_history[track_id][
+            -SETTINGS.carry.front_carry_history_len:
+        ]
+
+        if track_id not in self.front_carry_one_arm_history:
+            self.front_carry_one_arm_history[track_id] = []
+        self.front_carry_one_arm_history[track_id].append(
+            confirmation_input.front_carry_one_arm_raw
+        )
+        self.front_carry_one_arm_history[track_id] = (
+            self.front_carry_one_arm_history[track_id][
+                -SETTINGS.carry.front_carry_one_arm_history_len:
+            ]
+        )
+
+        front_carry_hits = sum(self.front_carry_history[track_id])
+        front_carry_one_arm_hits = sum(self.front_carry_one_arm_history[track_id])
+        two_hand_confirmed = (
+            len(self.front_carry_history[track_id])
+            >= SETTINGS.carry.front_carry_history_len
+            and front_carry_hits >= SETTINGS.carry.front_carry_min_hits
+        )
+        one_arm_confirmed = (
+            len(self.front_carry_one_arm_history[track_id])
+            >= SETTINGS.carry.front_carry_one_arm_history_len
+            and front_carry_one_arm_hits >= SETTINGS.carry.front_carry_one_arm_min_hits
+        )
+        front_carry_confirmed = two_hand_confirmed or one_arm_confirmed
+        return (
+            front_carry_hits,
+            front_carry_one_arm_hits,
+            two_hand_confirmed,
+            one_arm_confirmed,
+            front_carry_confirmed,
+        )
+
+    @staticmethod
+    def _resolve_carrying_arm(
+        left_carry: bool,
+        right_carry: bool,
+    ) -> tuple[str, str]:
+        if left_carry and right_carry:
+            return "BOTH", "NONE"
+        if left_carry:
+            return "LEFT_ARM", "LEFT"
+        if right_carry:
+            return "RIGHT_ARM", "RIGHT"
+        return "NONE", "NONE"
+
+    def _resolve_carry_confirmation_result(
+        self,
+        confirmation_input: CarryConfirmationInput,
+        front_carry_hits: int,
+        front_carry_one_arm_hits: int,
+        two_hand_confirmed: bool,
+        one_arm_confirmed: bool,
+        front_carry_confirmed: bool,
+    ) -> CarryConfirmationResult:
+        """Tach phan confirm/final carry state khoi raw evidence input."""
+        if (
+            two_hand_confirmed
+            and confirmation_input.left_carry_allowed
+            and confirmation_input.right_carry_allowed
+        ):
+            left_carry = True
+            right_carry = True
+            one_hand_carry_side = "NONE"
+        else:
+            one_hand_carry_side = self._resolve_one_hand_carry_side(
+                confirmation_input.left_carry_evidence,
+                confirmation_input.right_carry_evidence,
+                confirmation_input.left_carry_score,
+                confirmation_input.right_carry_score,
+                front_carry_two_hand=False,
+            )
+            left_carry = (
+                front_carry_confirmed and one_hand_carry_side == "LEFT"
+            )
+            right_carry = (
+                front_carry_confirmed and one_hand_carry_side == "RIGHT"
+            )
+            if not front_carry_confirmed:
+                one_hand_carry_side = "NONE"
+
+        carrying_arm, normalized_one_hand_side = self._resolve_carrying_arm(
+            left_carry,
+            right_carry,
+        )
+        return CarryConfirmationResult(
+            front_carry_hits=front_carry_hits,
+            front_carry_one_arm_hits=front_carry_one_arm_hits,
+            front_carry_confirmed=front_carry_confirmed,
+            front_carry_two_hand_confirmed=two_hand_confirmed,
+            front_carry_one_arm_confirmed=one_arm_confirmed,
+            left_carry=left_carry,
+            right_carry=right_carry,
+            one_hand_carry_side=normalized_one_hand_side,
+            carrying_arm=carrying_arm,
+            is_carrying=left_carry or right_carry,
+            carry_type="FRONT_CARRY" if (left_carry or right_carry) else "NONE",
+        )
+
+    def _apply_carry_confirmation_result(
+        self,
+        carry_info: CarryInfo,
+        confirmation_input: CarryConfirmationInput,
+        confirmation_result: CarryConfirmationResult,
+    ) -> CarryInfo:
+        """Map ket qua confirmation typed ve dict CarryInfo legacy cho downstream."""
+        carry_info["front_carry_raw"] = confirmation_input.front_carry_raw
+        carry_info["front_carry_hits"] = confirmation_result.front_carry_hits
+        carry_info["front_carry_two_hand_raw"] = (
+            confirmation_input.front_carry_two_hand_raw
+        )
+        carry_info["front_carry_two_hand_hits"] = confirmation_result.front_carry_hits
+        carry_info["front_carry_one_arm_raw"] = (
+            confirmation_input.front_carry_one_arm_raw
+        )
+        carry_info["front_carry_one_arm_hits"] = (
+            confirmation_result.front_carry_one_arm_hits
+        )
+        carry_info["front_carry_two_hand_confirmed"] = (
+            confirmation_result.front_carry_two_hand_confirmed
+        )
+        carry_info["front_carry_one_arm_confirmed"] = (
+            confirmation_result.front_carry_one_arm_confirmed
+        )
+        carry_info["front_carry_confirmed"] = (
+            confirmation_result.front_carry_confirmed
+        )
+        carry_info["front_carry"] = confirmation_result.is_carrying
+        carry_info["left_carry"] = confirmation_result.left_carry
+        carry_info["right_carry"] = confirmation_result.right_carry
+        carry_info["left_carry_allowed"] = confirmation_input.left_carry_allowed
+        carry_info["right_carry_allowed"] = confirmation_input.right_carry_allowed
+        carry_info["left_carry_evidence"] = confirmation_input.left_carry_evidence
+        carry_info["right_carry_evidence"] = confirmation_input.right_carry_evidence
+        carry_info["left_carry_score"] = confirmation_input.left_carry_score
+        carry_info["right_carry_score"] = confirmation_input.right_carry_score
+        carry_info["one_hand_carry_side"] = confirmation_result.one_hand_carry_side
+        carry_info["is_carrying"] = confirmation_result.is_carrying
+        carry_info["carrying_arm"] = confirmation_result.carrying_arm
+        carry_info["carry_type"] = confirmation_result.carry_type
+        carry_info["carry_reason"] = self._derive_carry_reason(
+            left_carry_allowed=confirmation_input.left_carry_allowed,
+            right_carry_allowed=confirmation_input.right_carry_allowed,
+            front_carry_active=confirmation_result.is_carrying,
+            front_carry_confirmed=confirmation_result.front_carry_confirmed,
+            front_carry_two_hand=(
+                confirmation_result.left_carry and confirmation_result.right_carry
+            ),
+            one_hand_carry_side=confirmation_result.one_hand_carry_side,
+        )
+        return carry_info
+
     def _analyze_carry(
         self,
         track_id: AnalysisSubjectID,
@@ -420,96 +758,38 @@ class CarryAnalysisMixin:
         right_carry_score = carry_info.get("right_carry_score")
         left_carry_score = left_carry_score if left_carry_evidence else None
         right_carry_score = right_carry_score if right_carry_evidence else None
-
-        # WHY: History 2 tay va 1 tay duoc luu rieng vi 2 pattern nay co nguong xac nhan khac nhau.
-        # Lich su 2 tay va 1 tay duoc luu rieng de giu nguyen logic nguong hien tai.
-        if track_id not in self.front_carry_history:
-            self.front_carry_history[track_id] = []
-        self.front_carry_history[track_id].append(front_carry_two_hand_raw)
-        self.front_carry_history[track_id] = self.front_carry_history[track_id][
-            -SETTINGS.carry.front_carry_history_len:
-        ]
-
-        if track_id not in self.front_carry_one_arm_history:
-            self.front_carry_one_arm_history[track_id] = []
-        self.front_carry_one_arm_history[track_id].append(front_carry_one_arm_raw)
-        self.front_carry_one_arm_history[track_id] = self.front_carry_one_arm_history[
-            track_id
-        ][-SETTINGS.carry.front_carry_one_arm_history_len:]
-
-        front_carry_hits = sum(self.front_carry_history[track_id])
-        front_carry_one_arm_hits = sum(self.front_carry_one_arm_history[track_id])
-
-        two_hand_confirmed = (
-            len(self.front_carry_history[track_id])
-            >= SETTINGS.carry.front_carry_history_len
-            and front_carry_hits >= SETTINGS.carry.front_carry_min_hits
-        )
-        one_arm_confirmed = (
-            len(self.front_carry_one_arm_history[track_id])
-            >= SETTINGS.carry.front_carry_one_arm_history_len
-            and front_carry_one_arm_hits >= SETTINGS.carry.front_carry_one_arm_min_hits
-        )
-        front_carry_confirmed = two_hand_confirmed or one_arm_confirmed
-
-        if two_hand_confirmed and left_carry_allowed and right_carry_allowed:
-            left_carry = True
-            right_carry = True
-            one_hand_carry_side = "NONE"
-        else:
-            one_hand_carry_side = self._resolve_one_hand_carry_side(
-                left_carry_evidence,
-                right_carry_evidence,
-                left_carry_score,
-                right_carry_score,
-                front_carry_two_hand=False,
-            )
-            left_carry = front_carry_confirmed and one_hand_carry_side == "LEFT"
-            right_carry = front_carry_confirmed and one_hand_carry_side == "RIGHT"
-            if not front_carry_confirmed:
-                one_hand_carry_side = "NONE"
-
-        if left_carry and right_carry:
-            carrying_arm = "BOTH"
-        elif left_carry:
-            carrying_arm = "LEFT_ARM"
-        elif right_carry:
-            carrying_arm = "RIGHT_ARM"
-        else:
-            carrying_arm = "NONE"
-            one_hand_carry_side = "NONE"
-
-        carry_info["front_carry_raw"] = front_carry_raw
-        carry_info["front_carry_hits"] = front_carry_hits
-        carry_info["front_carry_two_hand_raw"] = front_carry_two_hand_raw
-        carry_info["front_carry_two_hand_hits"] = front_carry_hits
-        carry_info["front_carry_one_arm_raw"] = front_carry_one_arm_raw
-        carry_info["front_carry_one_arm_hits"] = front_carry_one_arm_hits
-        carry_info["front_carry_two_hand_confirmed"] = two_hand_confirmed
-        carry_info["front_carry_one_arm_confirmed"] = one_arm_confirmed
-        carry_info["front_carry_confirmed"] = front_carry_confirmed
-        carry_info["front_carry"] = left_carry or right_carry
-        carry_info["left_carry"] = left_carry
-        carry_info["right_carry"] = right_carry
-        carry_info["left_carry_allowed"] = left_carry_allowed
-        carry_info["right_carry_allowed"] = right_carry_allowed
-        carry_info["left_carry_evidence"] = left_carry_evidence
-        carry_info["right_carry_evidence"] = right_carry_evidence
-        carry_info["left_carry_score"] = left_carry_score
-        carry_info["right_carry_score"] = right_carry_score
-        carry_info["one_hand_carry_side"] = one_hand_carry_side
-        carry_info["is_carrying"] = left_carry or right_carry
-        carry_info["carrying_arm"] = carrying_arm
-        carry_info["carry_type"] = "FRONT_CARRY" if (left_carry or right_carry) else "NONE"
-        carry_info["carry_reason"] = self._derive_carry_reason(
+        confirmation_input = self._build_carry_confirmation_input(
+            track_id=track_id,
+            front_carry_raw=bool(front_carry_raw),
+            front_carry_two_hand_raw=front_carry_two_hand_raw,
+            front_carry_one_arm_raw=front_carry_one_arm_raw,
             left_carry_allowed=left_carry_allowed,
             right_carry_allowed=right_carry_allowed,
-            front_carry_active=left_carry or right_carry,
-            front_carry_confirmed=front_carry_confirmed,
-            front_carry_two_hand=left_carry and right_carry,
-            one_hand_carry_side=one_hand_carry_side,
+            left_carry_evidence=left_carry_evidence,
+            right_carry_evidence=right_carry_evidence,
+            left_carry_score=left_carry_score,
+            right_carry_score=right_carry_score,
         )
-        return carry_info
+        (
+            front_carry_hits,
+            front_carry_one_arm_hits,
+            two_hand_confirmed,
+            one_arm_confirmed,
+            front_carry_confirmed,
+        ) = self._update_carry_confirmation_history(confirmation_input)
+        confirmation_result = self._resolve_carry_confirmation_result(
+            confirmation_input,
+            front_carry_hits,
+            front_carry_one_arm_hits,
+            two_hand_confirmed,
+            one_arm_confirmed,
+            front_carry_confirmed,
+        )
+        return self._apply_carry_confirmation_result(
+            carry_info,
+            confirmation_input,
+            confirmation_result,
+        )
 
 
 def evaluate_carry(

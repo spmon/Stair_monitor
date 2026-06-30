@@ -1,10 +1,114 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 from stair_monitor.common.types import BBox, KeypointsArray, Point, PoseFeatures
 from stair_monitor.config.settings import SETTINGS
 from stair_monitor.vision.geometry import extract_pose_features
+
+CarryRawInfo = dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class CarryRawInput:
+    keypoints: KeypointsArray | None
+    features: PoseFeatures | None
+
+
+@dataclass(frozen=True, slots=True)
+class BodyScale:
+    body_scale: float
+    shoulder_width: float | None
+    torso_height: float | None
+    bbox_height: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class CarryRawResult:
+    is_carrying: bool
+    carrying_arm: str
+    carry_type: str
+    left_arm_angle: float | None
+    right_arm_angle: float | None
+    left_wrist_in_torso: bool
+    right_wrist_in_torso: bool
+    body_scale: float
+    shoulder_width: float | None
+    torso_height: float | None
+    wrist_dx: int | None
+    wrist_dx_threshold: float
+    wrist_dy: int | None
+    wrist_dy_threshold: float
+    wrist_distance: float | None
+    left_bent: bool
+    right_bent: bool
+    wrists_close: bool
+    any_wrist_in_torso: bool
+    both_wrist_in_torso: bool
+    strong_left_front: bool
+    strong_right_front: bool
+    front_carry_two_hand: bool
+    front_carry_strong_one_arm: bool
+    front_carry_two_hand_raw: bool
+    front_carry_one_arm_raw: bool
+    front_carry: bool
+    front_carry_raw: bool
+    left_carry_raw: bool
+    right_carry_raw: bool
+    left_carry_score: float | None
+    right_carry_score: float | None
+    left_carry: bool
+    right_carry: bool
+
+    def to_legacy_dict(self) -> CarryRawInfo:
+        return {
+            "is_carrying": self.is_carrying,
+            "carrying_arm": self.carrying_arm,
+            "carry_type": self.carry_type,
+            "left_arm_angle": self.left_arm_angle,
+            "right_arm_angle": self.right_arm_angle,
+            "left_wrist_in_torso": self.left_wrist_in_torso,
+            "right_wrist_in_torso": self.right_wrist_in_torso,
+            "body_scale": self.body_scale,
+            "shoulder_width": self.shoulder_width,
+            "torso_height": self.torso_height,
+            "wrist_dx": self.wrist_dx,
+            "wrist_dx_threshold": self.wrist_dx_threshold,
+            "wrist_dy": self.wrist_dy,
+            "wrist_dy_threshold": self.wrist_dy_threshold,
+            "wrist_distance": self.wrist_distance,
+            "left_bent": self.left_bent,
+            "right_bent": self.right_bent,
+            "wrists_close": self.wrists_close,
+            "any_wrist_in_torso": self.any_wrist_in_torso,
+            "both_wrist_in_torso": self.both_wrist_in_torso,
+            "strong_left_front": self.strong_left_front,
+            "strong_right_front": self.strong_right_front,
+            "front_carry_two_hand": self.front_carry_two_hand,
+            "front_carry_strong_one_arm": self.front_carry_strong_one_arm,
+            "front_carry_two_hand_raw": self.front_carry_two_hand_raw,
+            "front_carry_one_arm_raw": self.front_carry_one_arm_raw,
+            "front_carry": self.front_carry,
+            "front_carry_raw": self.front_carry_raw,
+            "left_carry_raw": self.left_carry_raw,
+            "right_carry_raw": self.right_carry_raw,
+            "left_carry_score": self.left_carry_score,
+            "right_carry_score": self.right_carry_score,
+            "left_carry": self.left_carry,
+            "right_carry": self.right_carry,
+        }
+
+
+def build_carry_raw_input(
+    keypoints: KeypointsArray | None,
+    features: PoseFeatures | None,
+) -> CarryRawInput:
+    """Chuan hoa input raw carry cho boundary typed noi bo."""
+    return CarryRawInput(
+        keypoints=keypoints,
+        features=features,
+    )
 
 
 # Tai su dung pose feature da tinh san de tranh tinh lap lai trong cung 1 frame.
@@ -54,14 +158,14 @@ def _point_distance(
 
 # Tinh kich thuoc co the dong theo tung nguoi.
 # Carry uu tien threshold theo ti le co the, khong dua vao pixel cung.
-def _compute_body_scale(pose_features: PoseFeatures) -> dict[str, float | None]:
+def _compute_body_scale(pose_features: PoseFeatures) -> BodyScale:
     """Tinh scale dong cua co the de carry khong phu thuoc pixel cung.
 
     Args:
         pose_features: Dict feature da extract.
 
     Returns:
-        dict: body_scale, shoulder_width, torso_height, bbox_height.
+        `BodyScale`: body_scale, shoulder_width, torso_height, bbox_height.
 
     Notes:
         body_scale uu tien torso_height, roi moi fallback bbox_height va shoulder_width.
@@ -88,20 +192,20 @@ def _compute_body_scale(pose_features: PoseFeatures) -> dict[str, float | None]:
     if body_scale is None or body_scale <= 0:
         body_scale = 1.0
 
-    return {
-        "body_scale": float(body_scale),
-        "shoulder_width": shoulder_width,
-        "torso_height": torso_height,
-        "bbox_height": bbox_height,
-    }
+    return BodyScale(
+        body_scale=float(body_scale),
+        shoulder_width=shoulder_width,
+        torso_height=torso_height,
+        bbox_height=bbox_height,
+    )
 
 
 # Chieu ngang cho carry uu tien shoulder_width de phu hop voi be rong than tren.
-def _horizontal_carry_scale(scale_info: dict[str, float | None]) -> float:
+def _horizontal_carry_scale(scale_info: BodyScale) -> float:
     """Lay scale ngang cho carry threshold.
 
     Args:
-        scale_info: Dict tra ve tu _compute_body_scale.
+        scale_info: `BodyScale` tra ve tu `_compute_body_scale`.
 
     Returns:
         float: Scale ngang de tinh threshold dong.
@@ -109,18 +213,18 @@ def _horizontal_carry_scale(scale_info: dict[str, float | None]) -> float:
     Notes:
         Uu tien shoulder_width de theo sat be rong than tren that.
     """
-    shoulder_width = scale_info.get("shoulder_width")
+    shoulder_width = scale_info.shoulder_width
     if shoulder_width is not None and shoulder_width > 0:
         return shoulder_width
-    return max(1.0, scale_info["body_scale"] * 0.4)
+    return max(1.0, scale_info.body_scale * 0.4)
 
 
 # Chieu doc cho carry uu tien torso_height de phu hop voi vung truoc nguc/bung.
-def _vertical_carry_scale(scale_info: dict[str, float | None]) -> float:
+def _vertical_carry_scale(scale_info: BodyScale) -> float:
     """Lay scale doc cho carry threshold.
 
     Args:
-        scale_info: Dict tra ve tu _compute_body_scale.
+        scale_info: `BodyScale` tra ve tu `_compute_body_scale`.
 
     Returns:
         float: Scale doc de tinh threshold dong.
@@ -128,10 +232,10 @@ def _vertical_carry_scale(scale_info: dict[str, float | None]) -> float:
     Notes:
         Torso height giup torso box va wrist check dong theo tung nguoi.
     """
-    torso_height = scale_info.get("torso_height")
+    torso_height = scale_info.torso_height
     if torso_height is not None and torso_height > 0:
         return torso_height
-    return max(1.0, scale_info["body_scale"])
+    return max(1.0, scale_info.body_scale)
 
 
 # Kiem tra tay co gap goc giong tu the om/mang vat hay khong.
@@ -309,7 +413,7 @@ def detect_carrying_pose(
     keypoints: KeypointsArray | None,
     holding: bool = False,
     features: PoseFeatures | None = None,
-) -> dict[str, object]:
+) -> CarryRawInfo:
     """Tao bang chung carry raw cho 1 frame.
 
     Args:
@@ -325,36 +429,44 @@ def detect_carrying_pose(
         history xu ly o carry_analysis. Carry khong duoc ghi de ket qua hold.
     """
     _ = holding
-    pose_features = _get_features(features, keypoints)
+    rule_input = build_carry_raw_input(keypoints, features)
+    return detect_carrying_pose_typed(rule_input).to_legacy_dict()
+
+
+def detect_carrying_pose_typed(
+    rule_input: CarryRawInput,
+) -> CarryRawResult:
+    """Tinh raw carry voi contract typed, sau do caller co the convert ve dict cu."""
+    pose_features = _get_features(rule_input.features, rule_input.keypoints)
     scale_info = _compute_body_scale(pose_features)
     horizontal_scale = _horizontal_carry_scale(scale_info)
     vertical_scale = _vertical_carry_scale(scale_info)
 
     _, left_angle = is_arm_bent_for_carrying(
-        keypoints,
+        rule_input.keypoints,
         9,
         features=pose_features,
     )
     _, right_angle = is_arm_bent_for_carrying(
-        keypoints,
+        rule_input.keypoints,
         10,
         features=pose_features,
     )
-    torso_box = get_torso_box(keypoints, features=pose_features)
+    torso_box = get_torso_box(rule_input.keypoints, features=pose_features)
     left_wrist_in_torso = is_wrist_in_torso_area(
-        keypoints,
+        rule_input.keypoints,
         9,
         torso_box=torso_box,
         features=pose_features,
     )
     right_wrist_in_torso = is_wrist_in_torso_area(
-        keypoints,
+        rule_input.keypoints,
         10,
         torso_box=torso_box,
         features=pose_features,
     )
     wrist_dx, wrist_dy, wrist_distance = calc_wrist_distance(
-        keypoints,
+        rule_input.keypoints,
         features=pose_features,
     )
     # wrist_together dung de kiem tra hai co tay co du gan nhau theo chieu ngang/doc hay khong.
@@ -434,39 +546,39 @@ def detect_carrying_pose(
     else:
         carrying_arm = "NONE"
 
-    return {
-        "is_carrying": is_carrying,
-        "carrying_arm": carrying_arm,
-        "carry_type": carry_type,
-        "left_arm_angle": left_angle,
-        "right_arm_angle": right_angle,
-        "left_wrist_in_torso": left_wrist_in_torso,
-        "right_wrist_in_torso": right_wrist_in_torso,
-        "body_scale": scale_info["body_scale"],
-        "shoulder_width": scale_info.get("shoulder_width"),
-        "torso_height": scale_info.get("torso_height"),
-        "wrist_dx": wrist_dx,
-        "wrist_dx_threshold": wrist_dx_threshold,
-        "wrist_dy": wrist_dy,
-        "wrist_dy_threshold": wrist_dy_threshold,
-        "wrist_distance": wrist_distance,
-        "left_bent": left_bent,
-        "right_bent": right_bent,
-        "wrists_close": wrists_close,
-        "any_wrist_in_torso": any_wrist_in_torso,
-        "both_wrist_in_torso": both_wrist_in_torso,
-        "strong_left_front": strong_left_front,
-        "strong_right_front": strong_right_front,
-        "front_carry_two_hand": front_carry_two_hand,
-        "front_carry_strong_one_arm": front_carry_strong_one_arm,
-        "front_carry_two_hand_raw": front_carry_two_hand,
-        "front_carry_one_arm_raw": front_carry_strong_one_arm,
-        "front_carry": front_carry_raw,
-        "front_carry_raw": front_carry_raw,
-        "left_carry_raw": left_carry_raw,
-        "right_carry_raw": right_carry_raw,
-        "left_carry_score": left_carry_score,
-        "right_carry_score": right_carry_score,
-        "left_carry": left_carry,
-        "right_carry": right_carry,
-    }
+    return CarryRawResult(
+        is_carrying=is_carrying,
+        carrying_arm=carrying_arm,
+        carry_type=carry_type,
+        left_arm_angle=left_angle,
+        right_arm_angle=right_angle,
+        left_wrist_in_torso=left_wrist_in_torso,
+        right_wrist_in_torso=right_wrist_in_torso,
+        body_scale=scale_info.body_scale,
+        shoulder_width=scale_info.shoulder_width,
+        torso_height=scale_info.torso_height,
+        wrist_dx=wrist_dx,
+        wrist_dx_threshold=wrist_dx_threshold,
+        wrist_dy=wrist_dy,
+        wrist_dy_threshold=wrist_dy_threshold,
+        wrist_distance=wrist_distance,
+        left_bent=left_bent,
+        right_bent=right_bent,
+        wrists_close=wrists_close,
+        any_wrist_in_torso=any_wrist_in_torso,
+        both_wrist_in_torso=both_wrist_in_torso,
+        strong_left_front=strong_left_front,
+        strong_right_front=strong_right_front,
+        front_carry_two_hand=front_carry_two_hand,
+        front_carry_strong_one_arm=front_carry_strong_one_arm,
+        front_carry_two_hand_raw=front_carry_two_hand,
+        front_carry_one_arm_raw=front_carry_strong_one_arm,
+        front_carry=front_carry_raw,
+        front_carry_raw=front_carry_raw,
+        left_carry_raw=left_carry_raw,
+        right_carry_raw=right_carry_raw,
+        left_carry_score=left_carry_score,
+        right_carry_score=right_carry_score,
+        left_carry=left_carry,
+        right_carry=right_carry,
+    )

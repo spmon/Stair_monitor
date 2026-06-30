@@ -6,6 +6,9 @@ import numpy as np
 from numpy.typing import NDArray
 from typing import Literal, TypeAlias, TypedDict
 
+GStreamerCodec: TypeAlias = Literal["h264", "h265"]
+VideoCaptureBackend: TypeAlias = Literal["ffmpeg", "gstreamer"]
+InputMode: TypeAlias = Literal["file", "rtsp"]
 Point: TypeAlias = tuple[int, int]
 BBox: TypeAlias = tuple[int, int, int, int]
 FloatPoint: TypeAlias = tuple[float, float]

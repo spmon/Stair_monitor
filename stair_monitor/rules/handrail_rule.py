@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Literal
+
 from stair_monitor.common.types import (
     AnalysisSubjectID,
     KeypointsArray,
     LinePoints,
-    Numeric,
     Point,
     PoseFeatures,
 )
@@ -32,6 +34,242 @@ HoldState = dict[str, object]
 HandClaimEntry = dict[str, int | str | None]
 HandClaimState = dict[str, HandClaimEntry]
 WristDebugPayload = dict[str, object]
+PairKey = tuple[str, str]
+PairLegacyEvidence = dict[str, object]
+PairLegacyMap = dict[PairKey, PairLegacyEvidence | None]
+HandSide = Literal["left", "right"]
+HandClaimValue = Literal["HOLD", "CARRY"]
+
+
+@dataclass(frozen=True, slots=True)
+class HandrailRawEvidenceInput:
+    features: PoseFeatures | None
+    left_line: LinePoints | None
+    right_line: LinePoints | None
+
+
+@dataclass(frozen=True, slots=True)
+class WristRailEvidence:
+    wrist_point: Point
+    signed_distance: float
+    segment_distance: float
+    projection_t: float
+    closest_point: Point
+    side: str
+
+    def to_legacy_dict(self) -> PairLegacyEvidence:
+        return {
+            "point": self.wrist_point,
+            "dist": self.signed_distance,
+            "segment_dist": self.segment_distance,
+            "projection_t": self.projection_t,
+            "closest_point": self.closest_point,
+            "side": self.side,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class HandrailRawEvidenceResult:
+    left_line: LinePoints | None
+    right_line: LinePoints | None
+    pairs: dict[PairKey, WristRailEvidence | None]
+    left_wrist_valid: bool
+    right_wrist_valid: bool
+    holding_left_hand: bool
+    holding_right_hand: bool
+    left_hand_on_left_rail: bool | str
+    left_hand_on_right_rail: bool | str
+    right_hand_on_left_rail: bool | str
+    right_hand_on_right_rail: bool | str
+
+    def to_legacy_dict(self) -> HandrailEvidence:
+        legacy_pairs: PairLegacyMap = {
+            pair_key: (
+                pair_evidence.to_legacy_dict()
+                if pair_evidence is not None
+                else None
+            )
+            for pair_key, pair_evidence in self.pairs.items()
+        }
+        return {
+            "left_line": self.left_line,
+            "right_line": self.right_line,
+            "pairs": legacy_pairs,
+            "left_wrist_valid": self.left_wrist_valid,
+            "right_wrist_valid": self.right_wrist_valid,
+            "holding_left_hand": self.holding_left_hand,
+            "holding_right_hand": self.holding_right_hand,
+            "left_hand_on_left_rail": self.left_hand_on_left_rail,
+            "left_hand_on_right_rail": self.left_hand_on_right_rail,
+            "right_hand_on_left_rail": self.right_hand_on_left_rail,
+            "right_hand_on_right_rail": self.right_hand_on_right_rail,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PerHandBoolState:
+    left: bool
+    right: bool
+
+    def for_side(self, hand_side: HandSide) -> bool:
+        return self.left if hand_side == "left" else self.right
+
+    def to_legacy_fields(
+        self,
+        *,
+        left_key: str,
+        right_key: str,
+    ) -> dict[str, bool]:
+        return {
+            left_key: self.left,
+            right_key: self.right,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class HoldRawClaimPhaseState:
+    before_claim: PerHandBoolState
+    after_claim: PerHandBoolState
+
+
+@dataclass(frozen=True, slots=True)
+class PerHandClaimSelection:
+    left: HandClaimValue | None
+    right: HandClaimValue | None
+
+    def for_side(self, hand_side: HandSide) -> HandClaimValue | None:
+        return self.left if hand_side == "left" else self.right
+
+
+@dataclass(frozen=True, slots=True)
+class HandClaimUpdateInput:
+    hold_raw: PerHandBoolState
+    carry_raw: PerHandBoolState
+    handrail_active: PerHandBoolState
+
+
+def build_handrail_raw_evidence_input(
+    features: PoseFeatures | None,
+    left_line: LinePoints | None,
+    right_line: LinePoints | None,
+) -> HandrailRawEvidenceInput:
+    """Chuan hoa input raw handrail evidence cho boundary typed noi bo."""
+    return HandrailRawEvidenceInput(
+        features=features,
+        left_line=left_line,
+        right_line=right_line,
+    )
+
+
+def _read_per_hand_bool_state(
+    values: dict[str, object],
+    *,
+    left_key: str,
+    right_key: str,
+) -> PerHandBoolState:
+    """Doc 2 field trai/phai tu dict legacy va chuyen thanh state typed noi bo."""
+    return PerHandBoolState(
+        left=bool(values.get(left_key, False)),
+        right=bool(values.get(right_key, False)),
+    )
+
+
+def _read_hold_raw_claim_phase_state(
+    hold_state: HoldState,
+) -> HoldRawClaimPhaseState:
+    """Tach ro hold raw truoc claim va sau claim tu hold_state legacy."""
+    before_claim = PerHandBoolState(
+        left=bool(
+            hold_state.get(
+                "left_hold_raw_before_claim",
+                hold_state.get("left_hold_raw", False),
+            )
+        ),
+        right=bool(
+            hold_state.get(
+                "right_hold_raw_before_claim",
+                hold_state.get("right_hold_raw", False),
+            )
+        ),
+    )
+    after_claim = PerHandBoolState(
+        left=bool(
+            hold_state.get(
+                "left_hold_raw_after_claim",
+                hold_state.get("left_hold_raw", False),
+            )
+        ),
+        right=bool(
+            hold_state.get(
+                "right_hold_raw_after_claim",
+                hold_state.get("right_hold_raw", False),
+            )
+        ),
+    )
+    return HoldRawClaimPhaseState(
+        before_claim=before_claim,
+        after_claim=after_claim,
+    )
+
+
+def _get_hand_claim_label(
+    hand_claim_state: HandClaimState | None,
+    hand_side: HandSide,
+) -> HandClaimValue | None:
+    """Lay claim hien tai cua 1 tay neu da duoc gan HOLD/CARRY."""
+    if hand_claim_state is None:
+        return None
+    claim_value = hand_claim_state.get(hand_side, {}).get("claim")
+    if claim_value in ("HOLD", "CARRY"):
+        return claim_value
+    return None
+
+
+def _read_per_hand_claim_selection(
+    hand_claim_state: HandClaimState | None,
+) -> PerHandClaimSelection:
+    """Doc claim per-hand tu state dict va chuan hoa ve boundary typed noi bo."""
+    return PerHandClaimSelection(
+        left=_get_hand_claim_label(hand_claim_state, "left"),
+        right=_get_hand_claim_label(hand_claim_state, "right"),
+    )
+
+
+def _apply_carry_claim_to_hold_raw_state(
+    raw_hold_state: PerHandBoolState,
+    claim_selection: PerHandClaimSelection,
+) -> PerHandBoolState:
+    """Chi claim CARRY da confirmed moi duoc suppress hold raw cung tay."""
+    return PerHandBoolState(
+        left=False if claim_selection.left == "CARRY" else raw_hold_state.left,
+        right=False if claim_selection.right == "CARRY" else raw_hold_state.right,
+    )
+
+
+def _build_hand_claim_update_input(
+    *,
+    left_hold_raw: bool,
+    right_hold_raw: bool,
+    left_carry_raw: bool,
+    right_carry_raw: bool,
+    left_handrail_active: bool,
+    right_handrail_active: bool,
+) -> HandClaimUpdateInput:
+    """Gom raw hold/raw carry/handrail hit theo tung tay cho claim transition."""
+    return HandClaimUpdateInput(
+        hold_raw=PerHandBoolState(
+            left=left_hold_raw,
+            right=right_hold_raw,
+        ),
+        carry_raw=PerHandBoolState(
+            left=left_carry_raw,
+            right=right_carry_raw,
+        ),
+        handrail_active=PerHandBoolState(
+            left=left_handrail_active,
+            right=right_handrail_active,
+        ),
+    )
 
 
 # Body facing phuc vu logic di lui.
@@ -50,6 +288,16 @@ def _evaluate_wrist_against_line(
     wrist_point: Point | None,
     line: LinePoints | None,
 ) -> HandrailEvidence | None:
+    evidence = _evaluate_wrist_against_line_typed(wrist_point, line)
+    if evidence is None:
+        return None
+    return evidence.to_legacy_dict()
+
+
+def _evaluate_wrist_against_line_typed(
+    wrist_point: Point | None,
+    line: LinePoints | None,
+) -> WristRailEvidence | None:
     """Danh gia 1 wrist voi 1 line lan can.
 
     Args:
@@ -72,17 +320,135 @@ def _evaluate_wrist_against_line(
         line[0],
         line[1],
     )
-    return {
-        "point": wrist_point,
-        "dist": dist,
-        "segment_dist": segment_dist,
-        "projection_t": projection_t,
-        "closest_point": (
+    return WristRailEvidence(
+        wrist_point=wrist_point,
+        signed_distance=dist,
+        segment_distance=segment_dist,
+        projection_t=projection_t,
+        closest_point=(
             int(round(float(closest[0]))),
             int(round(float(closest[1]))),
         ),
-        "side": get_side_name(dist),
+        side=get_side_name(dist),
+    )
+
+
+def _pair_rule_for_rail(rail_name: str) -> str:
+    if rail_name == "LEFT_HANDRAIL":
+        return LEFT_HANDRAIL_RULE
+    return RIGHT_HANDRAIL_RULE
+
+
+def _pair_holds_rail_from_evidence(
+    pair_results: dict[PairKey, WristRailEvidence | None],
+    wrist_name: str,
+    rail_name: str,
+    rule: str,
+) -> bool | str:
+    pair = pair_results.get((wrist_name, rail_name))
+    if pair is None:
+        return "UNKNOWN"
+    if rule == LEFT_HANDRAIL_RULE:
+        return bool(
+            -SETTINGS.handrail.left_max_distance <= pair.signed_distance <= -10
+        )
+    if rule == RIGHT_HANDRAIL_RULE:
+        return bool(10 <= pair.signed_distance <= 60)
+    return "UNKNOWN"
+
+
+def compute_handrail_evidence_typed(
+    rule_input: HandrailRawEvidenceInput,
+) -> HandrailRawEvidenceResult:
+    """Tinh raw wrist/rail evidence voi contract typed, sau do caller co the convert ve dict cu."""
+    left_wrist = (
+        rule_input.features.get("left_wrist")
+        if rule_input.features is not None
+        else None
+    )
+    right_wrist = (
+        rule_input.features.get("right_wrist")
+        if rule_input.features is not None
+        else None
+    )
+
+    pair_results = {
+        ("LEFT_WRIST", "LEFT_HANDRAIL"): _evaluate_wrist_against_line_typed(
+            left_wrist,
+            rule_input.left_line,
+        ),
+        ("LEFT_WRIST", "RIGHT_HANDRAIL"): _evaluate_wrist_against_line_typed(
+            left_wrist,
+            rule_input.right_line,
+        ),
+        ("RIGHT_WRIST", "LEFT_HANDRAIL"): _evaluate_wrist_against_line_typed(
+            right_wrist,
+            rule_input.left_line,
+        ),
+        ("RIGHT_WRIST", "RIGHT_HANDRAIL"): _evaluate_wrist_against_line_typed(
+            right_wrist,
+            rule_input.right_line,
+        ),
     }
+
+    left_holding = any(
+        pair_results.get((wrist_name, rail_name)) is not None
+        and _pair_holds_rail_from_evidence(
+            pair_results,
+            wrist_name,
+            rail_name,
+            _pair_rule_for_rail(rail_name),
+        )
+        is True
+        for wrist_name, rail_name in pair_results
+        if wrist_name == "LEFT_WRIST"
+    )
+    right_holding = any(
+        pair_results.get((wrist_name, rail_name)) is not None
+        and _pair_holds_rail_from_evidence(
+            pair_results,
+            wrist_name,
+            rail_name,
+            _pair_rule_for_rail(rail_name),
+        )
+        is True
+        for wrist_name, rail_name in pair_results
+        if wrist_name == "RIGHT_WRIST"
+    )
+
+    return HandrailRawEvidenceResult(
+        left_line=rule_input.left_line,
+        right_line=rule_input.right_line,
+        pairs=pair_results,
+        left_wrist_valid=left_wrist is not None,
+        right_wrist_valid=right_wrist is not None,
+        holding_left_hand=left_holding,
+        holding_right_hand=right_holding,
+        left_hand_on_left_rail=_pair_holds_rail_from_evidence(
+            pair_results,
+            "LEFT_WRIST",
+            "LEFT_HANDRAIL",
+            LEFT_HANDRAIL_RULE,
+        ),
+        left_hand_on_right_rail=_pair_holds_rail_from_evidence(
+            pair_results,
+            "LEFT_WRIST",
+            "RIGHT_HANDRAIL",
+            RIGHT_HANDRAIL_RULE,
+        ),
+        right_hand_on_left_rail=_pair_holds_rail_from_evidence(
+            pair_results,
+            "RIGHT_WRIST",
+            "LEFT_HANDRAIL",
+            LEFT_HANDRAIL_RULE,
+        ),
+        right_hand_on_right_rail=_pair_holds_rail_from_evidence(
+            pair_results,
+            "RIGHT_WRIST",
+            "RIGHT_HANDRAIL",
+            RIGHT_HANDRAIL_RULE,
+        ),
+    )
 
 
 # Gom bang chung cho tung cap co tay - lan can trong 1 frame.
@@ -110,91 +476,12 @@ def compute_handrail_evidence(
         nhin truc tiep left_holding / right_holding.
     """
     _ = config
-    left_wrist = features.get("left_wrist") if features is not None else None
-    right_wrist = features.get("right_wrist") if features is not None else None
-
-    pair_results = {
-        ("LEFT_WRIST", "LEFT_HANDRAIL"): _evaluate_wrist_against_line(
-            left_wrist,
-            left_line,
-        ),
-        ("LEFT_WRIST", "RIGHT_HANDRAIL"): _evaluate_wrist_against_line(
-            left_wrist,
-            right_line,
-        ),
-        ("RIGHT_WRIST", "LEFT_HANDRAIL"): _evaluate_wrist_against_line(
-            right_wrist,
-            left_line,
-        ),
-        ("RIGHT_WRIST", "RIGHT_HANDRAIL"): _evaluate_wrist_against_line(
-            right_wrist,
-            right_line,
-        ),
-    }
-
-    def _pair_holds_rail(wrist_name: str, rail_name: str, rule: str) -> bool | str:
-        pair = pair_results.get((wrist_name, rail_name))
-        if pair is None:
-            return "UNKNOWN"
-        if rule == LEFT_HANDRAIL_RULE:
-            return bool(
-                -SETTINGS.handrail.left_max_distance <= pair["dist"] <= -10
-            )
-        if rule == RIGHT_HANDRAIL_RULE:
-            return bool(10 <= pair["dist"] <= 60)
-        return "UNKNOWN"
-
-    # Ket qua o day chi la bang chung frame-level cho tung co tay/tung rail.
-    # Runtime hold decision se quy ve 2 bien left_holding / right_holding.
-    return {
-        "left_line": left_line,
-        "right_line": right_line,
-        "pairs": pair_results,
-        "left_wrist_valid": left_wrist is not None,
-        "right_wrist_valid": right_wrist is not None,
-        "holding_left_hand": any(
-            pair_results.get((wrist_name, rail_name)) is not None
-            and _pair_holds_rail(
-                wrist_name,
-                rail_name,
-                LEFT_HANDRAIL_RULE if rail_name == "LEFT_HANDRAIL" else RIGHT_HANDRAIL_RULE,
-            )
-            is True
-            for wrist_name, rail_name in pair_results
-            if wrist_name == "LEFT_WRIST"
-        ),
-        "holding_right_hand": any(
-            pair_results.get((wrist_name, rail_name)) is not None
-            and _pair_holds_rail(
-                wrist_name,
-                rail_name,
-                LEFT_HANDRAIL_RULE if rail_name == "LEFT_HANDRAIL" else RIGHT_HANDRAIL_RULE,
-            )
-            is True
-            for wrist_name, rail_name in pair_results
-            if wrist_name == "RIGHT_WRIST"
-        ),
-        "left_hand_on_left_rail": _pair_holds_rail(
-            "LEFT_WRIST",
-            "LEFT_HANDRAIL",
-            LEFT_HANDRAIL_RULE,
-        ),
-        "left_hand_on_right_rail": _pair_holds_rail(
-            "LEFT_WRIST",
-            "RIGHT_HANDRAIL",
-            RIGHT_HANDRAIL_RULE,
-        ),
-        "right_hand_on_left_rail": _pair_holds_rail(
-            "RIGHT_WRIST",
-            "LEFT_HANDRAIL",
-            LEFT_HANDRAIL_RULE,
-        ),
-        "right_hand_on_right_rail": _pair_holds_rail(
-            "RIGHT_WRIST",
-            "RIGHT_HANDRAIL",
-            RIGHT_HANDRAIL_RULE,
-        ),
-}
+    rule_input = build_handrail_raw_evidence_input(
+        features=features,
+        left_line=left_line,
+        right_line=right_line,
+    )
+    return compute_handrail_evidence_typed(rule_input).to_legacy_dict()
 
 
 def evaluate_holding_status(
@@ -400,7 +687,7 @@ class HandrailAnalysisMixin:
     @staticmethod
     def _extract_wrist_debug_payload_from_hold_state(
         hold_state: HoldState,
-        wrist_side: str,
+        wrist_side: HandSide,
     ) -> WristDebugPayload:
         if wrist_side == "left":
             return {
@@ -436,25 +723,34 @@ class HandrailAnalysisMixin:
         self,
         left_wrist_valid: bool,
         right_wrist_valid: bool,
-        left_holding: bool,
-        right_holding: bool,
+        raw_hold_state: PerHandBoolState,
         left_debug_payload: WristDebugPayload | None = None,
         right_debug_payload: WristDebugPayload | None = None,
+        hold_raw_claim_phase: HoldRawClaimPhaseState | None = None,
     ) -> HoldState:
         if left_debug_payload is None:
             left_debug_payload = {}
         if right_debug_payload is None:
             right_debug_payload = {}
+        if hold_raw_claim_phase is None:
+            hold_raw_claim_phase = HoldRawClaimPhaseState(
+                before_claim=raw_hold_state,
+                after_claim=raw_hold_state,
+            )
 
         hold_info = {
-            "holding_raw": left_holding or right_holding,
+            "holding_raw": raw_hold_state.left or raw_hold_state.right,
             "hold_raw_status": "NONE",
             "holding_correct_raw": False,
             "holding_wrong_raw": False,
             "left_wrist_valid": left_wrist_valid,
             "right_wrist_valid": right_wrist_valid,
-            "left_wrist_hit": bool(left_debug_payload.get("hit", left_holding)),
-            "right_wrist_hit": bool(right_debug_payload.get("hit", right_holding)),
+            "left_wrist_hit": bool(
+                left_debug_payload.get("hit", raw_hold_state.left)
+            ),
+            "right_wrist_hit": bool(
+                right_debug_payload.get("hit", raw_hold_state.right)
+            ),
             "left_wrist_distance_to_left_rail": left_debug_payload.get(
                 "distance_to_left_rail"
             ),
@@ -481,26 +777,42 @@ class HandrailAnalysisMixin:
             ),
             "left_wrist_nearest_point": left_debug_payload.get("nearest_point"),
             "right_wrist_nearest_point": right_debug_payload.get("nearest_point"),
-            "left_holding": left_holding,
-            "right_holding": right_holding,
-            "left_hold_raw": left_holding,
-            "right_hold_raw": right_holding,
-            "left_hold_raw_before_claim": left_holding,
-            "right_hold_raw_before_claim": right_holding,
-            "left_hold_raw_after_claim": left_holding,
-            "right_hold_raw_after_claim": right_holding,
             "handrail_status": "KHONG_VIN",
             "handrail_reason": "NO_HAND_HOLDING",
             "handrail_debug_reason": "NO_HAND_HOLDING",
         }
+        hold_info.update(
+            raw_hold_state.to_legacy_fields(
+                left_key="left_holding",
+                right_key="right_holding",
+            )
+        )
+        hold_info.update(
+            raw_hold_state.to_legacy_fields(
+                left_key="left_hold_raw",
+                right_key="right_hold_raw",
+            )
+        )
+        hold_info.update(
+            hold_raw_claim_phase.before_claim.to_legacy_fields(
+                left_key="left_hold_raw_before_claim",
+                right_key="right_hold_raw_before_claim",
+            )
+        )
+        hold_info.update(
+            hold_raw_claim_phase.after_claim.to_legacy_fields(
+                left_key="left_hold_raw_after_claim",
+                right_key="right_hold_raw_after_claim",
+            )
+        )
 
-        if left_holding:
+        if raw_hold_state.left:
             hold_info["hold_raw_status"] = "WRONG_SIDE"
             hold_info["holding_wrong_raw"] = True
             hold_info["handrail_status"] = "VIN_SAI_BEN"
             hold_info["handrail_reason"] = "LEFT_HAND_HOLDING_IS_WRONG"
             hold_info["handrail_debug_reason"] = "LEFT_HAND_HOLDING_IS_WRONG"
-        elif right_holding:
+        elif raw_hold_state.right:
             hold_info["hold_raw_status"] = "CORRECT"
             hold_info["holding_correct_raw"] = True
             hold_info["handrail_status"] = "OK"
@@ -556,24 +868,25 @@ class HandrailAnalysisMixin:
             handrail_evidence = {}
         left_wrist_valid = bool(handrail_evidence.get("left_wrist_valid", False))
         right_wrist_valid = bool(handrail_evidence.get("right_wrist_valid", False))
-        left_holding_raw = bool(handrail_evidence.get("holding_left_hand", False))
-        right_holding_raw = bool(handrail_evidence.get("holding_right_hand", False))
+        raw_hold_state = PerHandBoolState(
+            left=bool(handrail_evidence.get("holding_left_hand", False)),
+            right=bool(handrail_evidence.get("holding_right_hand", False)),
+        )
         return self._build_left_right_hold_state(
             left_wrist_valid,
             right_wrist_valid,
-            left_holding_raw,
-            right_holding_raw,
+            raw_hold_state,
             left_debug_payload=self._build_wrist_debug_payload(
                 handrail_evidence,
                 "LEFT_WRIST",
                 left_wrist_valid,
-                left_holding_raw,
+                raw_hold_state.left,
             ),
             right_debug_payload=self._build_wrist_debug_payload(
                 handrail_evidence,
                 "RIGHT_WRIST",
                 right_wrist_valid,
-                right_holding_raw,
+                raw_hold_state.right,
             ),
         )
 
@@ -600,18 +913,22 @@ class HandrailAnalysisMixin:
         if hand_claim_state is None:
             hand_claim_state = {}
 
-        left_holding = bool(hold_state.get("left_holding", False))
-        right_holding = bool(hold_state.get("right_holding", False))
-        if hand_claim_state.get("left", {}).get("claim") == "CARRY":
-            left_holding = False
-        if hand_claim_state.get("right", {}).get("claim") == "CARRY":
-            right_holding = False
+        raw_hold_before_claim = _read_per_hand_bool_state(
+            hold_state,
+            left_key="left_holding",
+            right_key="right_holding",
+        )
+        claim_selection = _read_per_hand_claim_selection(hand_claim_state)
+        effective_hold_after_claim = _apply_carry_claim_to_hold_raw_state(
+            raw_hold_before_claim,
+            claim_selection,
+        )
+        hold_raw_claim_phase = _read_hold_raw_claim_phase_state(hold_state)
 
         claimed_hold_state = self._build_left_right_hold_state(
             bool(hold_state.get("left_wrist_valid", False)),
             bool(hold_state.get("right_wrist_valid", False)),
-            left_holding,
-            right_holding,
+            effective_hold_after_claim,
             left_debug_payload=self._extract_wrist_debug_payload_from_hold_state(
                 hold_state,
                 "left",
@@ -620,22 +937,10 @@ class HandrailAnalysisMixin:
                 hold_state,
                 "right",
             ),
-        )
-        claimed_hold_state["left_hold_raw_before_claim"] = hold_state.get(
-            "left_hold_raw_before_claim",
-            hold_state.get("left_hold_raw", False),
-        )
-        claimed_hold_state["right_hold_raw_before_claim"] = hold_state.get(
-            "right_hold_raw_before_claim",
-            hold_state.get("right_hold_raw", False),
-        )
-        claimed_hold_state["left_hold_raw_after_claim"] = claimed_hold_state.get(
-            "left_hold_raw",
-            False,
-        )
-        claimed_hold_state["right_hold_raw_after_claim"] = claimed_hold_state.get(
-            "right_hold_raw",
-            False,
+            hold_raw_claim_phase=HoldRawClaimPhaseState(
+                before_claim=hold_raw_claim_phase.before_claim,
+                after_claim=effective_hold_after_claim,
+            ),
         )
         return claimed_hold_state
 
@@ -669,36 +974,45 @@ class HandrailAnalysisMixin:
         # WHY: Mot tay khong nen vua duoc tinh la HOLD vua duoc tinh la CARRY trong cung mot giai doan.
         # Claim state la lop trung gian de khoa vai tro cua tung tay sau khi bang chung da du hit.
         claim_state = self._get_hand_claim_state(track_id)
-        hand_raw_inputs = {
-            "left": (left_hold_raw, left_carry_raw, left_handrail_active),
-            "right": (right_hold_raw, right_carry_raw, right_handrail_active),
-        }
+        claim_update_input = _build_hand_claim_update_input(
+            left_hold_raw=left_hold_raw,
+            right_hold_raw=right_hold_raw,
+            left_carry_raw=left_carry_raw,
+            right_carry_raw=right_carry_raw,
+            left_handrail_active=left_handrail_active,
+            right_handrail_active=right_handrail_active,
+        )
 
-        for hand_name, (hold_raw, carry_raw, handrail_active) in hand_raw_inputs.items():
-            hand_state = claim_state[hand_name]
+        for hand_side in ("left", "right"):
+            hand_state = claim_state[hand_side]
+            hold_raw_active = claim_update_input.hold_raw.for_side(hand_side)
+            carry_raw_active = claim_update_input.carry_raw.for_side(hand_side)
+            handrail_hit_active = claim_update_input.handrail_active.for_side(
+                hand_side
+            )
             hand_state["hold_hits"] = (
                 min(hand_state["hold_hits"] + 1, HAND_CLAIM_HOLD_HITS)
-                if hold_raw
+                if hold_raw_active
                 else max(hand_state["hold_hits"] - 1, 0)
             )
             hand_state["carry_hits"] = (
                 min(hand_state["carry_hits"] + 1, HAND_CLAIM_CARRY_HITS)
-                if carry_raw
+                if carry_raw_active
                 else max(hand_state["carry_hits"] - 1, 0)
             )
 
-            if not hold_raw and not carry_raw:
+            if not hold_raw_active and not carry_raw_active:
                 hand_state["misses"] += 1
             else:
                 hand_state["misses"] = 0
 
-            if handrail_active:
+            if handrail_hit_active:
                 hand_state["carry_hits"] = 0
                 if hand_state["claim"] == "CARRY":
                     hand_state["claim"] = None
 
             if hand_state["misses"] >= HAND_CLAIM_RESET_MISSES:
-                claim_state[hand_name] = self._new_hand_claim_entry()
+                claim_state[hand_side] = self._new_hand_claim_entry()
                 continue
 
             if hand_state["claim"] is not None:

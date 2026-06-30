@@ -1,5 +1,7 @@
 """Two-step behavior rule for stair_monitor Windows/demo."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -56,6 +58,50 @@ class TwoStepAnalysisResult:
 
     def to_analysis_context(self) -> dict[str, object]:
         return dict(self.context_fields)
+
+
+@dataclass(frozen=True, slots=True)
+class TwoStepInput:
+    subject_id: AnalysisSubjectID
+    direction: str
+    direction_source: str
+    features: PoseFeatures
+    inside_stairs: bool
+    frame_index: int
+
+
+@dataclass(frozen=True, slots=True)
+class TwoStepFrameState:
+    direction_label: str
+    left_ankle_point: Point | None
+    right_ankle_point: Point | None
+    left_ankle_conf: float
+    right_ankle_conf: float
+    left_ankle_step_point: Point | None
+    right_ankle_step_point: Point | None
+    ankle_step_offset_x: int
+    ankle_step_offset_y: int
+    ankle_step_offset_direction: str
+    filter_direction: str
+    direction_reliable: bool
+
+
+def build_two_step_input(
+    track_id: AnalysisSubjectID,
+    direction: str | None,
+    features: PoseFeatures,
+    inside_stairs: bool,
+    frame_index: int,
+    direction_source: str,
+) -> TwoStepInput:
+    return TwoStepInput(
+        subject_id=track_id,
+        direction=direction or "UNKNOWN",
+        direction_source=direction_source,
+        features=features,
+        inside_stairs=inside_stairs,
+        frame_index=frame_index,
+    )
 
 
 class TwoStepAnalyzer:
@@ -653,26 +699,22 @@ class TwoStepAnalyzer:
             "two_step_skip_confirmed": False,
         }
 
-    def analyze(
+    def _build_frame_state(
         self,
-        track_id: AnalysisSubjectID,
-        direction: str | None,
-        features: PoseFeatures,
-        inside_stairs: bool,
-        frame_index: int,
-        direction_source: str,
-    ) -> TwoStepAnalysisResult:
-        self.current_frame_index = frame_index
-        direction_label = direction or "UNKNOWN"
-        left_ankle_point = features.get("left_ankle")
-        right_ankle_point = features.get("right_ankle")
-        left_ankle_conf = float(features.get("left_ankle_conf", 0.0) or 0.0)
-        right_ankle_conf = float(features.get("right_ankle_conf", 0.0) or 0.0)
+        rule_input: TwoStepInput,
+    ) -> TwoStepFrameState:
+        direction_label = rule_input.direction or "UNKNOWN"
+        left_ankle_point = rule_input.features.get("left_ankle")
+        right_ankle_point = rule_input.features.get("right_ankle")
+        left_ankle_conf = float(rule_input.features.get("left_ankle_conf", 0.0) or 0.0)
+        right_ankle_conf = float(
+            rule_input.features.get("right_ankle_conf", 0.0) or 0.0
+        )
         ankle_step_offset_x, ankle_step_offset_y, ankle_step_offset_direction = (
             self._resolve_ankle_step_offset(
-                track_id,
+                rule_input.subject_id,
                 direction_label,
-                direction_source,
+                rule_input.direction_source,
             )
         )
         left_ankle_step_point = self._offset_ankle_step_point(
@@ -687,23 +729,44 @@ class TwoStepAnalyzer:
         )
         filter_direction, _filter_direction_source, direction_reliable = (
             self._resolve_two_step_filter_direction(
-                track_id,
+                rule_input.subject_id,
                 direction_label,
-                direction_source,
+                rule_input.direction_source,
             )
         )
+        return TwoStepFrameState(
+            direction_label=direction_label,
+            left_ankle_point=left_ankle_point,
+            right_ankle_point=right_ankle_point,
+            left_ankle_conf=left_ankle_conf,
+            right_ankle_conf=right_ankle_conf,
+            left_ankle_step_point=left_ankle_step_point,
+            right_ankle_step_point=right_ankle_step_point,
+            ankle_step_offset_x=ankle_step_offset_x,
+            ankle_step_offset_y=ankle_step_offset_y,
+            ankle_step_offset_direction=ankle_step_offset_direction,
+            filter_direction=filter_direction,
+            direction_reliable=direction_reliable,
+        )
+
+    def analyze_input(
+        self,
+        rule_input: TwoStepInput,
+    ) -> TwoStepAnalysisResult:
+        self.current_frame_index = rule_input.frame_index
+        frame_state = self._build_frame_state(rule_input)
 
         context_fields = self._build_default_context(
-            features,
-            left_ankle_step_point,
-            right_ankle_step_point,
-            ankle_step_offset_x,
-            ankle_step_offset_y,
-            ankle_step_offset_direction,
+            rule_input.features,
+            frame_state.left_ankle_step_point,
+            frame_state.right_ankle_step_point,
+            frame_state.ankle_step_offset_x,
+            frame_state.ankle_step_offset_y,
+            frame_state.ankle_step_offset_direction,
         )
 
         if not SETTINGS.two_step_skip.enabled:
-            self._update_two_step_skip_history(track_id, False)
+            self._update_two_step_skip_history(rule_input.subject_id, False)
             context_fields["two_step_skip_status"] = "DISABLED"
             context_fields["two_step_skip_reason"] = "TWO_STEP_SKIP_DISABLED"
             return TwoStepAnalysisResult(
@@ -714,8 +777,8 @@ class TwoStepAnalyzer:
                 context_fields=context_fields,
             )
 
-        if direction_label != "UP":
-            self._update_two_step_skip_history(track_id, False)
+        if frame_state.direction_label != "UP":
+            self._update_two_step_skip_history(rule_input.subject_id, False)
             context_fields["two_step_skip_status"] = "SKIPPED"
             context_fields["two_step_skip_reason"] = "ONLY_CHECK_WHEN_UP"
             return TwoStepAnalysisResult(
@@ -724,7 +787,7 @@ class TwoStepAnalyzer:
                 reason="ONLY_CHECK_WHEN_UP",
                 debug_lines=(
                     "TWO_STEP=SKIPPED",
-                    f"DIR={direction_label}",
+                    f"DIR={frame_state.direction_label}",
                     "REASON=ONLY_CHECK_WHEN_UP",
                 ),
                 context_fields=context_fields,
@@ -734,22 +797,31 @@ class TwoStepAnalyzer:
         reason = "NOT_EVALUATED"
         status = "NOT_EVALUATED"
         ankle_conf_threshold = float(SETTINGS.two_step_skip.ankle_conf_threshold)
-        left_raw_step_result = get_step_index_for_point(left_ankle_point, self.step_bands)
+        left_raw_step_result = get_step_index_for_point(
+            frame_state.left_ankle_point,
+            self.step_bands,
+        )
         right_raw_step_result = get_step_index_for_point(
-            right_ankle_point,
+            frame_state.right_ankle_point,
             self.step_bands,
         )
         left_step_result = get_step_index_for_point(
-            left_ankle_step_point,
+            frame_state.left_ankle_step_point,
             self.step_bands,
         )
         right_step_result = get_step_index_for_point(
-            right_ankle_step_point,
+            frame_state.right_ankle_step_point,
             self.step_bands,
         )
-        if left_ankle_point is not None and left_ankle_conf < ankle_conf_threshold:
+        if (
+            frame_state.left_ankle_point is not None
+            and frame_state.left_ankle_conf < ankle_conf_threshold
+        ):
             left_step_result = self._override_step_result_for_low_conf(left_step_result)
-        if right_ankle_point is not None and right_ankle_conf < ankle_conf_threshold:
+        if (
+            frame_state.right_ankle_point is not None
+            and frame_state.right_ankle_conf < ankle_conf_threshold
+        ):
             right_step_result = self._override_step_result_for_low_conf(
                 right_step_result
             )
@@ -779,47 +851,47 @@ class TwoStepAnalyzer:
             }
         )
 
-        if not inside_stairs:
+        if not rule_input.inside_stairs:
             reason = "OUTSIDE_STAIRS"
             status = "OUTSIDE_STAIRS"
         else:
             left_filter_info = self._filter_step_by_direction(
-                track_id,
+                rule_input.subject_id,
                 "LEFT",
                 left_step_result.step_index,
-                filter_direction,
-                direction_reliable,
+                frame_state.filter_direction,
+                frame_state.direction_reliable,
             )
             right_filter_info = self._filter_step_by_direction(
-                track_id,
+                rule_input.subject_id,
                 "RIGHT",
                 right_step_result.step_index,
-                filter_direction,
-                direction_reliable,
+                frame_state.filter_direction,
+                frame_state.direction_reliable,
             )
             left_filtered_step = left_filter_info.filtered_step
             right_filtered_step = right_filter_info.filtered_step
 
             left_foot_state = self._update_foot_step_state(
-                track_id,
+                rule_input.subject_id,
                 "LEFT",
-                left_ankle_point,
-                left_ankle_conf,
+                frame_state.left_ankle_point,
+                frame_state.left_ankle_conf,
                 left_filtered_step,
                 left_filter_info.filter_reason,
             )
             right_foot_state = self._update_foot_step_state(
-                track_id,
+                rule_input.subject_id,
                 "RIGHT",
-                right_ankle_point,
-                right_ankle_conf,
+                frame_state.right_ankle_point,
+                frame_state.right_ankle_conf,
                 right_filtered_step,
                 right_filter_info.filter_reason,
             )
 
             filtered_step_gap = None
             if (
-                direction_reliable
+                frame_state.direction_reliable
                 and isinstance(left_filtered_step, int)
                 and isinstance(right_filtered_step, int)
             ):
@@ -860,7 +932,7 @@ class TwoStepAnalyzer:
             reverse_reject_in_frame = (
                 left_filter_info.reverse_reject or right_filter_info.reverse_reject
             )
-            if not direction_reliable:
+            if not frame_state.direction_reliable:
                 reason = "DIRECTION_NOT_RELIABLE_FOR_TWO_STEP"
                 status = "DIRECTION_NOT_RELIABLE"
             elif filtered_step_gap is None:
@@ -890,12 +962,12 @@ class TwoStepAnalyzer:
                     reason = "FILTERED_GAP_OK"
                     status = "CLEAR"
 
-        confirmed = (
-            candidate_two_step_skip
-            and self._update_two_step_skip_history(track_id, candidate_two_step_skip)
+        confirmed = candidate_two_step_skip and self._update_two_step_skip_history(
+            rule_input.subject_id,
+            candidate_two_step_skip,
         )
         if not candidate_two_step_skip:
-            self._update_two_step_skip_history(track_id, False)
+            self._update_two_step_skip_history(rule_input.subject_id, False)
         if confirmed:
             reason = "TWO_STEP_SKIP_CONFIRMED"
             status = "CONFIRMED"
@@ -915,3 +987,22 @@ class TwoStepAnalyzer:
             else None,
             context_fields=context_fields,
         )
+
+    def analyze(
+        self,
+        track_id: AnalysisSubjectID,
+        direction: str | None,
+        features: PoseFeatures,
+        inside_stairs: bool,
+        frame_index: int,
+        direction_source: str,
+    ) -> TwoStepAnalysisResult:
+        rule_input = build_two_step_input(
+            track_id=track_id,
+            direction=direction,
+            features=features,
+            inside_stairs=inside_stairs,
+            frame_index=frame_index,
+            direction_source=direction_source,
+        )
+        return self.analyze_input(rule_input)
